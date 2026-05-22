@@ -421,7 +421,13 @@
             // --- Try 1: Google Maps full URL (has coordinates) ---
             const gmResult = parseGoogleMapsUrl(query);
             if (gmResult) {
-                goToLocation(gmResult.lat, gmResult.lng, gmResult.zoom, 'Google Maps URL');
+                // Try to extract place name from URL: /place/NAME/@...
+                let placeName = 'Google Maps URL';
+                const placeMatch = query.match(/\/place\/([^/@]+)/);
+                if (placeMatch) {
+                    try { placeName = decodeURIComponent(placeMatch[1]).replace(/\+/g, ' '); } catch(e) {}
+                }
+                goToLocation(gmResult.lat, gmResult.lng, gmResult.zoom, placeName);
                 resultsEl.classList.remove('show');
                 return;
             }
@@ -458,21 +464,28 @@
         }
 
         function parseGoogleMapsUrl(text) {
-            // Format: @lat,lng,zoomz
-            let m = text.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*),(\d+\.?\d*)z/);
-            if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom: Math.round(parseFloat(m[3])) };
+            if (!text.includes('google.com/maps') && !text.includes('maps.google')) return null;
 
-            // Format: /place/.../@lat,lng
+            // Get zoom from @lat,lng,zoomz (map view center)
+            let zoom = 17;
+            const zoomMatch = text.match(/@[^,]+,[^,]+,(\d+\.?\d*)z/);
+            if (zoomMatch) zoom = Math.round(parseFloat(zoomMatch[1]));
+
+            // Priority 1: Place pin coordinates from data parameter (!3d=lat, !4d=lng)
+            // These are the ACTUAL place coordinates, not the map view center
+            const lat3d = text.match(/!3d(-?\d+\.?\d+)/);
+            const lng4d = text.match(/!4d(-?\d+\.?\d+)/);
+            if (lat3d && lng4d) {
+                return { lat: parseFloat(lat3d[1]), lng: parseFloat(lng4d[1]), zoom };
+            }
+
+            // Priority 2: ?q=lat,lng or &ll=lat,lng or &center=lat,lng
+            let m = text.match(/[?&](?:q|ll|center)=(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+            if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom };
+
+            // Priority 3: @lat,lng (map view center — fallback)
             m = text.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
-            if (m && text.includes('google')) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom: 17 };
-
-            // Format: ?q=lat,lng or &ll=lat,lng
-            m = text.match(/[?&](?:q|ll|center)=(-?\d+\.?\d*),(-?\d+\.?\d*)/);
-            if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom: 17 };
-
-            // Format: maps/dir/lat,lng
-            m = text.match(/maps\/.*?(-?\d+\.\d{4,}),(-?\d+\.\d{4,})/);
-            if (m && text.includes('google')) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom: 17 };
+            if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom };
 
             return null;
         }
