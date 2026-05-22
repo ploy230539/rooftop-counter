@@ -7,6 +7,7 @@
     let mapInitialized = false;
     let detecting = false;
     let eraserMode = false;
+    let searchPin = null;  // Red pin from URL/search
 
     function initMap() {
         if (mapInitialized) return;
@@ -14,8 +15,27 @@
 
         map = L.map('map').setView([13.7563, 100.5018], 15);
 
-        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            { attribution: 'Esri', maxZoom: 19 }).addTo(map);
+        // Road map (default) — OpenStreetMap
+        const roadMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors',
+            maxZoom: 19
+        });
+
+        // Satellite — Esri World Imagery
+        const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Esri',
+            maxZoom: 19,
+            crossOrigin: 'anonymous'
+        });
+
+        // Default to road map
+        roadMap.addTo(map);
+
+        // Layer switcher control
+        L.control.layers({
+            '🗺️ แผนที่ถนน': roadMap,
+            '🛰️ ดาวเทียม': satellite
+        }, null, { position: 'topleft', collapsed: false }).addTo(map);
 
         drawnItems = new L.FeatureGroup().addTo(map);
         buildingMarkers = new L.FeatureGroup().addTo(map);
@@ -475,6 +495,26 @@
 
         function goToLocation(lat, lng, zoom, source) {
             zoom = Math.min(Math.max(zoom, 10), 19);
+
+            // Remove previous search pin
+            if (searchPin) {
+                map.removeLayer(searchPin);
+                searchPin = null;
+            }
+
+            // Add red pin marker at searched location
+            searchPin = L.marker([lat, lng], {
+                icon: L.icon({
+                    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    shadowSize: [41, 41]
+                })
+            }).addTo(map);
+            searchPin.bindPopup(`📍 <b>${source}</b><br>${lat.toFixed(5)}, ${lng.toFixed(5)}`).openPopup();
+
             map.flyTo([lat, lng], zoom, { duration: 1.5 });
             showStatus(`📍 ไปยังพิกัด ${lat.toFixed(4)}, ${lng.toFixed(4)} (${source})`);
         }
@@ -512,10 +552,9 @@
                             else if (span > 0.01) zoom = 15;
                             else zoom = 17;
                         }
-                        map.flyTo([lat, lon], zoom, { duration: 1.5 });
+                        goToLocation(lat, lon, zoom, name);
                         input.value = name;
                         resultsEl.classList.remove('show');
-                        showStatus(`📍 ไปยัง: ${name}`);
                     });
                     resultsEl.appendChild(item);
                 });

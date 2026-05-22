@@ -332,6 +332,23 @@ input[type="range"]::-webkit-slider-thumb {
     pointer-events: none;
 }
 
+/* Layer control dark theme */
+.leaflet-control-layers {
+    background: rgba(30,41,59,0.95) !important;
+    border: 1px solid #475569 !important;
+    border-radius: 8px !important;
+    color: #e2e8f0 !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+    padding: 8px 12px !important;
+}
+.leaflet-control-layers label {
+    color: #e2e8f0 !important;
+    font-size: 0.82rem !important;
+}
+.leaflet-control-layers-separator {
+    border-top-color: #475569 !important;
+}
+
 /* Responsive */
 @media (max-width:768px) {
     .main-container { flex-direction:column; }
