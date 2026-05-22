@@ -1,0 +1,499 @@
+// ===== Image Mode with Auto-Detection + Area Drawing + Manual Pins =====
+(function () {
+    let canvas, ctx;
+    let img = null;
+    let panX = 0, panY = 0, scale = 1;
+    let isPanning = false, panStart = { x: 0, y: 0 }, panStartOff = { x: 0, y: 0 };
+
+    // Tool modes: null | 'edit' | 'eraser' | 'draw-circle' | 'draw-rect'
+    let toolMode = null;
+
+    // Markers: { x, y, auto:bool }
+    let markers = [];
+    let detecting = false;
+
+    // Area constraint (image coords)
+    // { type:'circle', cx, cy, r } or { type:'rect', x1, y1, x2, y2 }
+    let area = null;
+    let drawStart = null;  // canvas coords
+    let drawCurrent = null;
+
+    const MARKER_R = 7;
+
+    function init() {
+        canvas = document.getElementById('image-canvas');
+        ctx = canvas.getContext('2d');
+
+        // Upload
+        const dropZone = document.getElementById('img-drop-zone');
+        const fileInput = document.getElementById('img-upload');
+        dropZone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+        document.getElementById('btn-choose-file').addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault(); dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+        });
+
+        // Canvas events
+        canvas.addEventListener('mousedown', onDown);
+        canvas.addEventListener('mousemove', onMove);
+        canvas.addEventListener('mouseup', onUp);
+        canvas.addEventListener('mouseleave', onUp);
+        canvas.addEventListener('wheel', onWheel, { passive: false });
+        setupTouch();
+
+        // Buttons
+        document.getElementById('btn-detect').addEventListener('click', runDetection);
+        document.getElementById('btn-edit').addEventListener('click', () => setTool(toolMode === 'edit' ? null : 'edit'));
+        document.getElementById('btn-eraser').addEventListener('click', () => setTool(toolMode === 'eraser' ? null : 'eraser'));
+        document.getElementById('btn-draw-circle').addEventListener('click', () => setTool(toolMode === 'draw-circle' ? null : 'draw-circle'));
+        document.getElementById('btn-draw-rect').addEventListener('click', () => setTool(toolMode === 'draw-rect' ? null : 'draw-rect'));
+        document.getElementById('btn-clear-area').addEventListener('click', clearArea);
+        document.getElementById('btn-undo').addEventListener('click', undoMarker);
+        document.getElementById('btn-clear-ai').addEventListener('click', () => { markers = markers.filter(m => !m.auto); updateUI(); render(); });
+        document.getElementById('btn-clear-markers').addEventListener('click', () => { markers = []; updateUI(); render(); });
+        document.getElementById('btn-export').addEventListener('click', showReport);
+        document.getElementById('modal-close').addEventListener('click', () => document.getElementById('report-modal').style.display = 'none');
+        document.getElementById('btn-print').addEventListener('click', () => window.print());
+        document.getElementById('btn-copy').addEventListener('click', () => {
+            navigator.clipboard.writeText(document.getElementById('report-content').innerText);
+        });
+        document.getElementById('avg-people').addEventListener('change', updateUI);
+        window.addEventListener('resize', resizeCanvas);
+    }
+
+    // --- File loading ---
+    function loadFile(file) {
+        if (!file || !file.type.startsWith('image/')) return;
+        document.getElementById('file-name').textContent = file.name;
+        const reader = new FileReader();
+        reader.onload = e => loadImageUrl(e.target.result);
+        reader.readAsDataURL(file);
+    }
+
+    function loadImageUrl(url) {
+        const image = new Image();
+        image.onload = () => {
+            img = image; markers = []; area = null;
+            setTool(null);
+            document.getElementById('img-drop-zone').style.display = 'none';
+            document.getElementById('canvas-wrap').style.display = 'block';
+            document.getElementById('btn-detect').disabled = false;
+            requestAnimationFrame(() => { resizeCanvas(); fitImage(); updateUI(); updateAreaInfo(); setHint('วงพื้นที่ → กด ตรวจจับ หรือ ตรวจจับทั้งรูปเลย'); });
+        };
+        image.src = url;
+    }
+    window._imgLoadUrl = loadImageUrl;
+
+    function resizeCanvas() {
+        const wrap = document.getElementById('canvas-wrap');
+        if (!wrap || wrap.style.display === 'none') return;
+        const w = wrap.clientWidth, h = wrap.clientHeight;
+        if (w > 0 && h > 0) { canvas.width = w; canvas.height = h; render(); }
+    }
+
+    function fitImage() {
+        if (!img) return;
+        scale = Math.min((canvas.width - 20) / img.width, (canvas.height - 20) / img.height, 2);
+        panX = (canvas.width - img.width * scale) / 2;
+        panY = (canvas.height - img.height * scale) / 2;
+        render();
+    }
+
+    // --- Coordinates ---
+    function c2i(cx, cy) { return { x: (cx - panX) / scale, y: (cy - panY) / scale }; }
+    function i2c(ix, iy) { return { x: ix * scale + panX, y: iy * scale + panY }; }
+    function evtPos(e) { const r = canvas.getBoundingClientRect(); return { x: (e.clientX || 0) - r.left, y: (e.clientY || 0) - r.top }; }
+
+    // --- Tool mode ---
+    function setTool(mode) {
+        toolMode = mode;
+        // Update button states
+        document.getElementById('btn-edit').classList.toggle('active', mode === 'edit');
+        document.getElementById('btn-edit').textContent = mode === 'edit' ? '📌 ปักหมุด (กำลังใช้ — คลิกรูป)' : '📌 เปิดโหมดปักหมุดเอง';
+        document.getElementById('btn-eraser').classList.toggle('active', mode === 'eraser');
+        document.getElementById('btn-eraser').textContent = mode === 'eraser' ? '🧹 ลบหมุด (กำลังใช้ — คลิกหมุด)' : '🧹 โหมดลบหมุด AI';
+        document.getElementById('btn-draw-circle').classList.toggle('active', mode === 'draw-circle');
+        document.getElementById('btn-draw-rect').classList.toggle('active', mode === 'draw-rect');
+        document.getElementById('btn-undo').style.display = (mode === 'edit' || mode === 'eraser') ? 'block' : 'none';
+
+        // Cursor
+        const wrap = document.getElementById('canvas-wrap');
+        wrap.classList.toggle('mode-edit', !!mode);
+
+        // Hints
+        const hints = {
+            'edit': 'คลิกหลังคา = เพิ่มหมุด (🟡) | คลิกหมุดเดิม = ลบ',
+            'eraser': 'คลิกหมุด 🟢 หรือ 🟡 เพื่อลบ (ไม่เพิ่มหมุดใหม่)',
+            'draw-circle': 'คลิกค้างแล้วลาก เพื่อวาดวงกลม',
+            'draw-rect': 'คลิกค้างแล้วลาก เพื่อวาดสี่เหลี่ยม',
+        };
+        setHint(mode ? hints[mode] : '');
+    }
+
+    // --- Mouse events ---
+    function onDown(e) {
+        if (!img) return;
+        const pos = evtPos(e);
+
+        // Eraser mode — only delete, never add
+        if (toolMode === 'eraser') {
+            const ip = c2i(pos.x, pos.y);
+            const hitR = Math.max(MARKER_R, MARKER_R / scale) * 2.5;
+            for (let i = markers.length - 1; i >= 0; i--) {
+                if (Math.hypot(markers[i].x - ip.x, markers[i].y - ip.y) <= hitR) {
+                    markers.splice(i, 1); updateUI(); render(); return;
+                }
+            }
+            return;
+        }
+
+        // Manual pin mode — add + delete
+        if (toolMode === 'edit') {
+            const ip = c2i(pos.x, pos.y);
+            const hitR = Math.max(MARKER_R, MARKER_R / scale) * 2;
+            for (let i = markers.length - 1; i >= 0; i--) {
+                if (Math.hypot(markers[i].x - ip.x, markers[i].y - ip.y) <= hitR) {
+                    markers.splice(i, 1); updateUI(); render(); return;
+                }
+            }
+            if (ip.x >= 0 && ip.y >= 0 && ip.x <= img.width && ip.y <= img.height) {
+                markers.push({ x: ip.x, y: ip.y, auto: false });
+                updateUI(); render();
+            }
+            return;
+        }
+
+        // Draw area modes
+        if (toolMode === 'draw-circle' || toolMode === 'draw-rect') {
+            drawStart = pos; drawCurrent = pos; return;
+        }
+
+        // Pan
+        isPanning = true;
+        panStart = pos;
+        panStartOff = { x: panX, y: panY };
+        canvas.style.cursor = 'grabbing';
+    }
+
+    function onMove(e) {
+        if (!img) return;
+        const pos = evtPos(e);
+        if (drawStart && (toolMode === 'draw-circle' || toolMode === 'draw-rect')) {
+            drawCurrent = pos; render(); return;
+        }
+        if (isPanning) {
+            panX = panStartOff.x + pos.x - panStart.x;
+            panY = panStartOff.y + pos.y - panStart.y;
+            render();
+        }
+    }
+
+    function onUp() {
+        if (drawStart && drawCurrent && (toolMode === 'draw-circle' || toolMode === 'draw-rect')) {
+            finalizeArea(); drawStart = null; drawCurrent = null; return;
+        }
+        isPanning = false; canvas.style.cursor = '';
+    }
+
+    function onWheel(e) {
+        e.preventDefault(); if (!img) return;
+        const pos = evtPos(e);
+        const f = e.deltaY > 0 ? 0.85 : 1.18;
+        const ns = Math.min(Math.max(scale * f, 0.05), 25);
+        panX = pos.x - (pos.x - panX) * (ns / scale);
+        panY = pos.y - (pos.y - panY) * (ns / scale);
+        scale = ns; render();
+    }
+
+    // Touch support
+    function setupTouch() {
+        let lastT = [];
+        canvas.addEventListener('touchstart', e => {
+            e.preventDefault(); lastT = [...e.touches];
+            if (e.touches.length === 1) onDown({ clientX: e.touches[0].clientX, clientY: e.touches[0].clientY });
+        }, { passive: false });
+        canvas.addEventListener('touchmove', e => {
+            e.preventDefault();
+            const t = [...e.touches];
+            if (t.length === 1 && lastT.length === 1) {
+                if (!toolMode) { panX += t[0].clientX - lastT[0].clientX; panY += t[0].clientY - lastT[0].clientY; render(); }
+                else onMove({ clientX: t[0].clientX, clientY: t[0].clientY });
+            } else if (t.length === 2 && lastT.length === 2) {
+                const d1 = Math.hypot(lastT[0].clientX - lastT[1].clientX, lastT[0].clientY - lastT[1].clientY);
+                const d2 = Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+                const mid = { x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 };
+                const rect = canvas.getBoundingClientRect();
+                const cx = mid.x - rect.left, cy = mid.y - rect.top;
+                const ns = Math.min(Math.max(scale * d2 / d1, 0.05), 25);
+                panX = cx - (cx - panX) * (ns / scale); panY = cy - (cy - panY) * (ns / scale); scale = ns; render();
+            }
+            lastT = t;
+        }, { passive: false });
+        canvas.addEventListener('touchend', e => { lastT = [...e.touches]; if (e.touches.length === 0) onUp(); });
+    }
+
+    // --- Area drawing ---
+    function finalizeArea() {
+        const s = c2i(drawStart.x, drawStart.y);
+        const e2 = c2i(drawCurrent.x, drawCurrent.y);
+
+        if (toolMode === 'draw-circle') {
+            const r = Math.hypot(e2.x - s.x, e2.y - s.y);
+            if (r < 5) return;
+            area = { type: 'circle', cx: s.x, cy: s.y, r };
+        } else if (toolMode === 'draw-rect') {
+            const x1 = Math.min(s.x, e2.x), y1 = Math.min(s.y, e2.y);
+            const x2 = Math.max(s.x, e2.x), y2 = Math.max(s.y, e2.y);
+            if (Math.abs(x2 - x1) < 5 || Math.abs(y2 - y1) < 5) return;
+            area = { type: 'rect', x1, y1, x2, y2 };
+        }
+
+        updateAreaInfo();
+        render();
+        setTool(null);
+        setHint('กำหนดพื้นที่แล้ว — กด "ตรวจจับหลังคาอัตโนมัติ" เพื่อเริ่ม');
+    }
+
+    function clearArea() {
+        area = null; updateAreaInfo(); render();
+        setHint('ล้างวงพื้นที่แล้ว — ตรวจจับจะครอบคลุมทั้งรูป');
+    }
+
+    function isInArea(ix, iy) {
+        if (!area) return true;
+        if (area.type === 'circle') return Math.hypot(ix - area.cx, iy - area.cy) <= area.r;
+        if (area.type === 'rect') return ix >= area.x1 && ix <= area.x2 && iy >= area.y1 && iy <= area.y2;
+        return true;
+    }
+
+    function updateAreaInfo() {
+        const el = document.getElementById('area-info');
+        if (!area) { el.textContent = ''; return; }
+        if (area.type === 'circle') {
+            el.innerHTML = `⭕ วงกลม — รัศมี ${Math.round(area.r)} px`;
+        } else {
+            el.innerHTML = `⬜ สี่เหลี่ยม — ${Math.round(area.x2 - area.x1)} × ${Math.round(area.y2 - area.y1)} px`;
+        }
+    }
+
+    // --- Detection ---
+    async function runDetection() {
+        if (!img || detecting) return;
+        detecting = true;
+        const btn = document.getElementById('btn-detect');
+        btn.disabled = true; btn.textContent = '⏳ กำลังตรวจจับ...';
+        const bar = document.getElementById('progress-bar');
+        const fill = document.getElementById('progress-fill');
+        const text = document.getElementById('progress-text');
+        bar.style.display = 'block';
+
+        const off = document.createElement('canvas');
+        off.width = img.width; off.height = img.height;
+        off.getContext('2d').drawImage(img, 0, 0);
+        const imageData = off.getContext('2d').getImageData(0, 0, img.width, img.height);
+
+        const sensitivity = parseInt(document.getElementById('sensitivity').value);
+        const minArea2 = parseInt(document.getElementById('min-roof-size').value);
+        const maxArea2 = parseInt(document.getElementById('max-roof-size').value);
+
+        // Build area mask for detector (null = whole image)
+        let areaMask = null;
+        if (area) {
+            areaMask = new Uint8Array(img.width * img.height);
+            for (let y = 0; y < img.height; y++) {
+                for (let x = 0; x < img.width; x++) {
+                    if (isInArea(x, y)) areaMask[y * img.width + x] = 1;
+                }
+            }
+        }
+
+        await new Promise(resolve => {
+            setTimeout(() => {
+                const results = RooftopDetector.detect(
+                    imageData, img.width, img.height,
+                    { sensitivity, minArea: minArea2, maxArea: maxArea2, areaMask },
+                    (pct, msg) => { fill.style.width = pct + '%'; text.textContent = msg; }
+                );
+
+                // Keep manual markers, replace auto
+                const manual = markers.filter(m => !m.auto);
+                markers = manual.concat(results.map(r => ({
+                    x: r.x, y: r.y, auto: true,
+                    area: r.area, bbox: r.bbox, color: r.color
+                })));
+                resolve();
+            }, 50);
+        });
+
+        btn.disabled = false; btn.textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
+        setTimeout(() => { bar.style.display = 'none'; }, 1200);
+        detecting = false;
+
+        const autoCount = markers.filter(m => m.auto).length;
+        updateUI(); render();
+        setHint(`พบ ${autoCount} หลังคา` + (area ? ' (ในวงที่กำหนด)' : '') + ' — ปักหมุดเพิ่มได้ถ้าตกหล่น');
+    }
+
+    function undoMarker() {
+        if (markers.length) { markers.pop(); updateUI(); render(); }
+    }
+
+    // --- Rendering ---
+    function render() {
+        if (!canvas || !ctx) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (!img) return;
+
+        // Image
+        ctx.save(); ctx.translate(panX, panY); ctx.scale(scale, scale);
+        ctx.drawImage(img, 0, 0); ctx.restore();
+
+        // Dim area outside the drawn area
+        if (area) drawAreaOverlay();
+
+        // Area being drawn (preview)
+        if (drawStart && drawCurrent && (toolMode === 'draw-circle' || toolMode === 'draw-rect')) drawAreaPreview();
+
+        // Markers
+        drawMarkers();
+    }
+
+    function drawAreaOverlay() {
+        // Semi-transparent overlay outside the area
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+
+        // Draw full image rect, then cut out the area
+        ctx.beginPath();
+        const tl = i2c(0, 0), br = i2c(img.width, img.height);
+        ctx.rect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+
+        if (area.type === 'circle') {
+            const center = i2c(area.cx, area.cy);
+            const rCanvas = area.r * scale;
+            ctx.moveTo(center.x + rCanvas, center.y);
+            ctx.arc(center.x, center.y, rCanvas, 0, Math.PI * 2, true);
+        } else if (area.type === 'rect') {
+            const p1 = i2c(area.x1, area.y1), p2 = i2c(area.x2, area.y2);
+            ctx.rect(p2.x, p1.y, p1.x - p2.x, p2.y - p1.y); // counter-clockwise to cut
+        }
+        ctx.fill('evenodd');
+
+        // Border
+        ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2.5; ctx.setLineDash([8, 4]);
+        if (area.type === 'circle') {
+            const center = i2c(area.cx, area.cy);
+            ctx.beginPath(); ctx.arc(center.x, center.y, area.r * scale, 0, Math.PI * 2); ctx.stroke();
+        } else {
+            const p1 = i2c(area.x1, area.y1), p2 = i2c(area.x2, area.y2);
+            ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+        }
+        ctx.restore();
+    }
+
+    function drawAreaPreview() {
+        ctx.save();
+        ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2; ctx.setLineDash([6, 3]);
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.08)';
+
+        if (toolMode === 'draw-circle') {
+            const r = Math.hypot(drawCurrent.x - drawStart.x, drawCurrent.y - drawStart.y);
+            ctx.beginPath(); ctx.arc(drawStart.x, drawStart.y, r, 0, Math.PI * 2);
+            ctx.fill(); ctx.stroke();
+        } else {
+            const x = Math.min(drawStart.x, drawCurrent.x), y = Math.min(drawStart.y, drawCurrent.y);
+            const w = Math.abs(drawCurrent.x - drawStart.x), h = Math.abs(drawCurrent.y - drawStart.y);
+            ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
+        }
+        ctx.restore();
+    }
+
+    function drawMarkers() {
+        markers.forEach((m, i) => {
+            const cp = i2c(m.x, m.y);
+            const r = Math.max(4, Math.min(MARKER_R, MARKER_R * scale * 0.7));
+            const isAuto = m.auto;
+
+            ctx.save();
+            // Bounding box for auto-detected
+            if (isAuto && m.bbox && scale > 0.4) {
+                const tl = i2c(m.bbox.x, m.bbox.y);
+                ctx.strokeStyle = 'rgba(16,185,129,0.5)'; ctx.lineWidth = 1;
+                ctx.setLineDash([3, 2]);
+                ctx.strokeRect(tl.x, tl.y, m.bbox.w * scale, m.bbox.h * scale);
+                ctx.setLineDash([]);
+            }
+
+            // Dot
+            ctx.beginPath(); ctx.arc(cp.x, cp.y, r, 0, Math.PI * 2);
+            ctx.fillStyle = isAuto ? '#10b981' : '#f59e0b';
+            ctx.fill(); ctx.strokeStyle = 'white'; ctx.lineWidth = 1.5; ctx.stroke();
+
+            // Number
+            if (scale > 0.25 && r >= 4) {
+                ctx.fillStyle = 'white';
+                ctx.font = `bold ${Math.max(7, Math.min(10, r * 1.2))}px sans-serif`;
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillText(i + 1, cp.x, cp.y);
+            }
+            ctx.restore();
+        });
+    }
+
+    // --- UI ---
+    function updateUI() {
+        const total = markers.length;
+        const auto = markers.filter(m => m.auto).length;
+        const manual = total - auto;
+        const avgP = parseFloat(document.getElementById('avg-people').value) || 3.5;
+
+        document.getElementById('canvas-counter').textContent =
+            `หลังคา: ${total}` + (manual > 0 && auto > 0 ? ` (อัตโนมัติ ${auto} + มือ ${manual})` : manual > 0 ? ` (มือ ${manual})` : '');
+
+        if (total > 0) {
+            document.getElementById('result-houses').textContent = total.toLocaleString() + ' หลัง';
+            document.getElementById('result-population').textContent = Math.round(total * avgP).toLocaleString() + ' คน';
+            document.getElementById('result-source').textContent =
+                auto > 0 && manual > 0 ? `อัตโนมัติ ${auto} + มือ ${manual}` :
+                auto > 0 ? `ตรวจจับอัตโนมัติ (${auto})` : `ปักหมุดเอง (${manual})`;
+            document.getElementById('results-panel').style.display = 'block';
+        }
+    }
+
+    function setHint(msg) {
+        const el = document.getElementById('canvas-hint');
+        el.textContent = msg; el.classList.toggle('show', !!msg);
+    }
+
+    // --- Report ---
+    function showReport() {
+        const total = markers.length, auto = markers.filter(m => m.auto).length, manual = total - auto;
+        const avgP = document.getElementById('avg-people').value;
+        const areaText = area ? (area.type === 'circle' ? `วงกลม รัศมี ${Math.round(area.r)} px` : `สี่เหลี่ยม ${Math.round(area.x2-area.x1)}×${Math.round(area.y2-area.y1)} px`) : 'ทั้งรูป';
+
+        document.getElementById('report-content').innerHTML = `
+            <p><strong>วันที่:</strong> ${new Date().toLocaleString('th-TH')}</p>
+            <table>
+                <tr><th>รายการ</th><th>ค่า</th></tr>
+                <tr><td><strong>จำนวนหลังคาเรือน</strong></td><td><strong>${total} หลัง</strong></td></tr>
+                <tr><td><strong>ประชากรโดยประมาณ</strong></td><td><strong>${Math.round(total * parseFloat(avgP))} คน</strong></td></tr>
+                <tr><td>ตรวจจับอัตโนมัติ</td><td>${auto} หลัง</td></tr>
+                <tr><td>ปักหมุดเอง</td><td>${manual} หลัง</td></tr>
+                <tr><td>คน/หลังคาเรือน</td><td>${avgP}</td></tr>
+                <tr><td>พื้นที่ตรวจจับ</td><td>${areaText}</td></tr>
+                <tr><td>Sensitivity</td><td>${document.getElementById('sensitivity').value}/10</td></tr>
+            </table>
+            <p style="margin-top:10px;color:#94a3b8;font-size:0.78rem;">
+                * 🟢 = ตรวจจับอัตโนมัติ &nbsp; 🟡 = ปักหมุดเอง<br>
+                * ความแม่นยำขึ้นกับคุณภาพรูปและ zoom level
+            </p>`;
+        document.getElementById('report-modal').style.display = 'flex';
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+})();

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>นับหลังคาเรือน - Auto Detect</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+    <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+    <div id="app">
+        <header class="app-header">
+            <h1>🏘️ นับหลังคาเรือน</h1>
+            <p class="subtitle">อัปโหลดรูปดาวเทียม → ตรวจจับหลังคาอัตโนมัติ → ประมาณประชากร</p>
+        </header>
+
+        <div class="main-container">
+            <div class="sidebar">
+                <!-- Tab selector -->
+                <div class="tab-row">
+                    <button class="tab-btn active" id="tab-image">🖼️ นับจากรูป</button>
+                    <button class="tab-btn" id="tab-map">🗺️ แผนที่</button>
+                </div>
+
+                <!-- Image mode controls -->
+                <div id="image-controls">
+                    <div class="panel">
+                        <h3>📷 อัปโหลดรูปดาวเทียม</h3>
+                        <div class="upload-area" id="sidebar-upload">
+                            <input type="file" id="img-upload" accept="image/*" style="display:none">
+                            <button class="btn btn-primary" id="btn-choose-file">📂 เลือกรูป</button>
+                            <span class="file-name" id="file-name">ยังไม่ได้เลือก</span>
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h3>🔍 ตรวจจับหลังคา</h3>
+                        <div class="setting-group">
+                            <label for="sensitivity">ความไว (Sensitivity)</label>
+                            <input type="range" id="sensitivity" min="1" max="10" value="5" step="1">
+                            <div class="range-labels">
+                                <span>น้อย</span><span>ปานกลาง</span><span>มาก</span>
+                            </div>
+                        </div>
+                        <div class="setting-group">
+                            <label for="min-roof-size">ขนาดหลังคาเล็กสุด (px)</label>
+                            <input type="number" id="min-roof-size" value="80" min="20" max="2000" step="10">
+                        </div>
+                        <div class="setting-group">
+                            <label for="max-roof-size">ขนาดหลังคาใหญ่สุด (px)</label>
+                            <input type="number" id="max-roof-size" value="15000" min="500" max="100000" step="100">
+                        </div>
+                        <button id="btn-detect" class="btn btn-detect" disabled>
+                            🤖 ตรวจจับหลังคาอัตโนมัติ
+                        </button>
+                        <div class="progress-bar" id="progress-bar" style="display:none">
+                            <div class="progress-fill" id="progress-fill"></div>
+                            <span class="progress-text" id="progress-text">0%</span>
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h3>⚙️ ตั้งค่า</h3>
+                        <div class="setting-group">
+                            <label for="avg-people">จำนวนคน/หลังคาเรือน (เฉลี่ย)</label>
+                            <input type="number" id="avg-people" value="3.5" step="0.1" min="1" max="20">
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h3>⭕ วงพื้นที่ตรวจจับ</h3>
+                        <p class="panel-desc">วาดวงกลม/สี่เหลี่ยมบนรูป ระบบจะตรวจจับเฉพาะในวงเท่านั้น</p>
+                        <div class="tool-buttons">
+                            <div class="tool-row">
+                                <button id="btn-draw-circle" class="btn btn-draw">⭕ วงกลม</button>
+                                <button id="btn-draw-rect" class="btn btn-draw">⬜ สี่เหลี่ยม</button>
+                            </div>
+                            <button id="btn-clear-area" class="btn btn-outline-small">✕ ล้างวงพื้นที่</button>
+                        </div>
+                        <div class="area-info" id="area-info"></div>
+                    </div>
+
+                    <div class="panel">
+                        <h3>📌 ปักหมุดเอง</h3>
+                        <p class="panel-desc">สำหรับหลังคาที่ระบบตรวจจับไม่เจอ — คลิกเพิ่ม / คลิกซ้ำลบ</p>
+                        <div class="tool-buttons">
+                            <button id="btn-edit" class="btn btn-manual-pin">📌 เปิดโหมดปักหมุดเอง</button>
+                            <button id="btn-eraser" class="btn btn-eraser">🧹 โหมดลบหมุด AI</button>
+                            <button id="btn-undo" class="btn btn-undo" style="display:none">↩️ ลบหมุดล่าสุด</button>
+                            <button id="btn-clear-ai" class="btn btn-outline-small">✕ ลบหมุด AI ทั้งหมด</button>
+                            <button id="btn-clear-markers" class="btn btn-danger">🗑️ ล้างหมุดทั้งหมด</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Map mode controls -->
+                <div id="map-controls" style="display:none">
+                    <div class="panel">
+                        <h3>🔍 ค้นหาสถานที่</h3>
+                        <div class="search-box">
+                            <input type="text" id="map-search" placeholder="วาง Google Maps URL, พิกัด, หรือชื่อสถานที่..." autocomplete="off">
+                            <button id="btn-search" class="btn btn-primary search-btn">🔍</button>
+                        </div>
+                        <p class="panel-desc" style="margin-top:4px">
+                            รองรับ: วาง URL จาก Google Maps / พิกัด เช่น 13.75,100.50 / ชื่อสถานที่
+                        </p>
+                        <div id="search-results" class="search-results"></div>
+                        <button id="btn-open-gmaps" class="btn btn-outline-small" style="margin-top:6px">🗺️ เปิด Google Maps เพื่อค้นหา → คัดลอก URL กลับมาวาง</button>
+                    </div>
+
+                    <div class="panel">
+                        <h3>🤖 ตรวจจับหลังคา</h3>
+                        <p class="panel-desc">วาดพื้นที่บนแผนที่ (ใช้เครื่องมือขวาบน) แล้วกดตรวจจับ</p>
+                        <div class="setting-group">
+                            <label for="map-sensitivity">ความไว (Sensitivity)</label>
+                            <input type="range" id="map-sensitivity" min="1" max="10" value="5" step="1">
+                            <div class="range-labels">
+                                <span>น้อย</span><span>ปานกลาง</span><span>มาก</span>
+                            </div>
+                        </div>
+                        <button id="btn-count" class="btn btn-detect" disabled>
+                            🤖 ตรวจจับหลังคาอัตโนมัติ
+                        </button>
+                        <div class="progress-bar" id="map-progress-bar" style="display:none">
+                            <div class="progress-fill" id="map-progress-fill"></div>
+                            <span class="progress-text" id="map-progress-text">0%</span>
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h3>📌 ปักหมุดเอง / ลบหมุด</h3>
+                        <p class="panel-desc">คลิกเพิ่มหมุด / คลิกหมุดเดิมลบ</p>
+                        <div class="tool-buttons">
+                            <button id="btn-manual" class="btn btn-manual-pin">📌 เปิดโหมดปักหมุด</button>
+                            <button id="btn-eraser-map" class="btn btn-eraser">🧹 โหมดลบหมุด AI</button>
+                            <button id="btn-undo-map" class="btn btn-undo" style="display:none">↩️ ลบหมุดล่าสุด</button>
+                            <button id="btn-clear-ai-map" class="btn btn-outline-small">✕ ลบหมุด AI ทั้งหมด</button>
+                            <button id="btn-clear-map" class="btn btn-danger">🗑️ ล้างทั้งหมด</button>
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h3>⚙️ ตั้งค่า</h3>
+                        <div class="setting-group">
+                            <label for="avg-people-map">จำนวนคน/หลังคาเรือน (เฉลี่ย)</label>
+                            <input type="number" id="avg-people-map" value="3.5" step="0.1" min="1" max="20">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results (shared) -->
+                <div class="panel results-panel" id="results-panel" style="display:none;">
+                    <h3>📊 ผลลัพธ์</h3>
+                    <div class="result-grid">
+                        <div class="result-item highlight big">
+                            <span class="result-label">จำนวนหลังคาเรือน</span>
+                            <span class="result-value" id="result-houses">-</span>
+                        </div>
+                        <div class="result-item highlight">
+                            <span class="result-label">ประชากรโดยประมาณ</span>
+                            <span class="result-value" id="result-population">-</span>
+                        </div>
+                        <div class="result-item" id="result-source-row">
+                            <span class="result-label">แหล่งที่มา</span>
+                            <span class="result-value" id="result-source">-</span>
+                        </div>
+                    </div>
+                    <button id="btn-export" class="btn btn-outline" style="margin-top:10px">📊 ส่งออกรายงาน</button>
+                </div>
+            </div>
+
+            <!-- Right: Canvas / Map -->
+            <div class="right-panel">
+                <!-- Image mode -->
+                <div class="image-mode" id="image-mode">
+                    <div class="drop-zone" id="img-drop-zone">
+                        <div class="drop-icon">🛰️</div>
+                        <p class="drop-title">ลากวางรูปดาวเทียม หรือคลิกเลือก</p>
+                        <p class="drop-sub">เช่น screenshot จาก Google Maps / Google Earth</p>
+                        <p class="drop-hint">รองรับ JPG, PNG, WEBP</p>
+                    </div>
+                    <div class="canvas-wrap" id="canvas-wrap" style="display:none">
+                        <canvas id="image-canvas"></canvas>
+                        <div class="canvas-counter" id="canvas-counter">หลังคา: 0</div>
+                        <div class="canvas-hint" id="canvas-hint"></div>
+                    </div>
+                </div>
+
+                <!-- Map mode -->
+                <div class="map-mode" id="map-mode" style="display:none">
+                    <div id="map"></div>
+                    <div class="map-pin-counter" id="map-pin-counter" style="display:none">หลังคา: 0</div>
+                    <div id="loading-overlay" style="display:none">
+                        <div class="spinner"></div>
+                        <p id="loading-text">กำลังประมวลผล...</p>
+                    </div>
+                    <div id="map-status" class="map-status"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Report modal -->
+    <div id="report-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📊 รายงาน</h2>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="report-content"></div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="btn-print">🖨️ พิมพ์</button>
+                <button class="btn btn-secondary" id="btn-copy">📋 คัดลอก</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script src="detector.js"></script>
+    <script src="image-mode.js"></script>
+    <script src="map-mode.js"></script>
+</body>
+</html>
