@@ -5,18 +5,23 @@
     let panX = 0, panY = 0, scale = 1;
     let isPanning = false, panStart = { x: 0, y: 0 }, panStartOff = { x: 0, y: 0 };
 
-    // Tool modes: null | 'edit' | 'eraser' | 'draw-circle' | 'draw-rect'
+    // Tool modes: null | 'edit' | 'eraser' | 'draw-circle' | 'draw-rect' | 'draw-freehand'
     let toolMode = null;
+    let detectMode = 'satellite'; // 'satellite' | 'roadmap'
 
     // Markers: { x, y, auto:bool }
     let markers = [];
     let detecting = false;
 
     // Area constraint (image coords)
-    // { type:'circle', cx, cy, r } or { type:'rect', x1, y1, x2, y2 }
+    // { type:'circle', cx, cy, r } or { type:'rect', x1, y1, x2, y2 } or { type:'polygon', points }
     let area = null;
     let drawStart = null;  // canvas coords
     let drawCurrent = null;
+
+    // Freehand drawing state
+    let freehandPoints = [];
+    let freehandDrawing = false;
 
     const MARKER_R = 7;
 
@@ -51,7 +56,22 @@
         document.getElementById('btn-eraser').addEventListener('click', () => setTool(toolMode === 'eraser' ? null : 'eraser'));
         document.getElementById('btn-draw-circle').addEventListener('click', () => setTool(toolMode === 'draw-circle' ? null : 'draw-circle'));
         document.getElementById('btn-draw-rect').addEventListener('click', () => setTool(toolMode === 'draw-rect' ? null : 'draw-rect'));
+        document.getElementById('btn-draw-freehand').addEventListener('click', () => setTool(toolMode === 'draw-freehand' ? null : 'draw-freehand'));
         document.getElementById('btn-clear-area').addEventListener('click', clearArea);
+
+        // Detection mode toggle
+        document.getElementById('detect-mode-satellite').addEventListener('click', () => {
+            detectMode = 'satellite';
+            document.getElementById('detect-mode-satellite').classList.add('active');
+            document.getElementById('detect-mode-roadmap').classList.remove('active');
+            document.getElementById('satellite-settings').style.display = 'block';
+        });
+        document.getElementById('detect-mode-roadmap').addEventListener('click', () => {
+            detectMode = 'roadmap';
+            document.getElementById('detect-mode-roadmap').classList.add('active');
+            document.getElementById('detect-mode-satellite').classList.remove('active');
+            document.getElementById('satellite-settings').style.display = 'none';
+        });
         document.getElementById('btn-undo').addEventListener('click', undoMarker);
         document.getElementById('btn-clear-ai').addEventListener('click', () => { markers = markers.filter(m => !m.auto); updateUI(); render(); });
         document.getElementById('btn-clear-markers').addEventListener('click', () => { markers = []; updateUI(); render(); });
@@ -110,6 +130,11 @@
 
     // --- Tool mode ---
     function setTool(mode) {
+        // Clean up freehand state when leaving freehand mode
+        if (toolMode === 'draw-freehand' && mode !== 'draw-freehand') {
+            freehandPoints = [];
+            freehandDrawing = false;
+        }
         toolMode = mode;
         // Update button states
         document.getElementById('btn-edit').classList.toggle('active', mode === 'edit');
@@ -118,6 +143,8 @@
         document.getElementById('btn-eraser').textContent = mode === 'eraser' ? '🧹 ลบหมุด (กำลังใช้ — คลิกหมุด)' : '🧹 โหมดลบหมุด AI';
         document.getElementById('btn-draw-circle').classList.toggle('active', mode === 'draw-circle');
         document.getElementById('btn-draw-rect').classList.toggle('active', mode === 'draw-rect');
+        document.getElementById('btn-draw-freehand').classList.toggle('active', mode === 'draw-freehand');
+        document.getElementById('btn-draw-freehand').textContent = mode === 'draw-freehand' ? '✏️ กำลังวาด... (ลากเมาส์แล้วปล่อย)' : '✏️ วาดอิสระ (Free Hand)';
         document.getElementById('btn-undo').style.display = (mode === 'edit' || mode === 'eraser') ? 'block' : 'none';
 
         // Cursor
@@ -130,6 +157,7 @@
             'eraser': 'คลิกหมุด 🟢 หรือ 🟡 เพื่อลบ (ไม่เพิ่มหมุดใหม่)',
             'draw-circle': 'คลิกค้างแล้วลาก เพื่อวาดวงกลม',
             'draw-rect': 'คลิกค้างแล้วลาก เพื่อวาดสี่เหลี่ยม',
+            'draw-freehand': 'กดเมาส์ค้าง แล้วลากวาดพื้นที่ → ปล่อยเพื่อปิดรูป',
         };
         setHint(mode ? hints[mode] : '');
     }
@@ -172,6 +200,14 @@
             drawStart = pos; drawCurrent = pos; return;
         }
 
+        // Freehand drawing mode
+        if (toolMode === 'draw-freehand') {
+            freehandDrawing = true;
+            const ip = c2i(pos.x, pos.y);
+            freehandPoints = [ip];
+            return;
+        }
+
         // Pan
         isPanning = true;
         panStart = pos;
@@ -185,6 +221,11 @@
         if (drawStart && (toolMode === 'draw-circle' || toolMode === 'draw-rect')) {
             drawCurrent = pos; render(); return;
         }
+        if (freehandDrawing && toolMode === 'draw-freehand') {
+            const ip = c2i(pos.x, pos.y);
+            freehandPoints.push(ip);
+            render(); return;
+        }
         if (isPanning) {
             panX = panStartOff.x + pos.x - panStart.x;
             panY = panStartOff.y + pos.y - panStart.y;
@@ -195,6 +236,9 @@
     function onUp() {
         if (drawStart && drawCurrent && (toolMode === 'draw-circle' || toolMode === 'draw-rect')) {
             finalizeArea(); drawStart = null; drawCurrent = null; return;
+        }
+        if (freehandDrawing && toolMode === 'draw-freehand') {
+            finalizeFreehand(); return;
         }
         isPanning = false; canvas.style.cursor = '';
     }
@@ -263,10 +307,47 @@
         setHint('ล้างวงพื้นที่แล้ว — ตรวจจับจะครอบคลุมทั้งรูป');
     }
 
+    function finalizeFreehand() {
+        freehandDrawing = false;
+        if (freehandPoints.length < 5) {
+            setHint('วาดน้อยเกินไป — ลองลากให้ยาวขึ้น');
+            freehandPoints = [];
+            render();
+            return;
+        }
+        // Simplify: keep every Nth point
+        const simplified = [];
+        const step = Math.max(1, Math.floor(freehandPoints.length / 80));
+        for (let i = 0; i < freehandPoints.length; i += step) {
+            simplified.push(freehandPoints[i]);
+        }
+        simplified.push(simplified[0]); // close
+
+        area = { type: 'polygon', points: simplified };
+        freehandPoints = [];
+        updateAreaInfo();
+        render();
+        setTool(null);
+        setHint('กำหนดพื้นที่แล้ว — กด "ตรวจจับหลังคาอัตโนมัติ" เพื่อเริ่ม');
+    }
+
+    function pointInPolygonImg(x, y, polygon) {
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i].x, yi = polygon[i].y;
+            const xj = polygon[j].x, yj = polygon[j].y;
+            if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+                inside = !inside;
+            }
+        }
+        return inside;
+    }
+
     function isInArea(ix, iy) {
         if (!area) return true;
         if (area.type === 'circle') return Math.hypot(ix - area.cx, iy - area.cy) <= area.r;
         if (area.type === 'rect') return ix >= area.x1 && ix <= area.x2 && iy >= area.y1 && iy <= area.y2;
+        if (area.type === 'polygon') return pointInPolygonImg(ix, iy, area.points);
         return true;
     }
 
@@ -275,8 +356,10 @@
         if (!area) { el.textContent = ''; return; }
         if (area.type === 'circle') {
             el.innerHTML = `⭕ วงกลม — รัศมี ${Math.round(area.r)} px`;
-        } else {
+        } else if (area.type === 'rect') {
             el.innerHTML = `⬜ สี่เหลี่ยม — ${Math.round(area.x2 - area.x1)} × ${Math.round(area.y2 - area.y1)} px`;
+        } else if (area.type === 'polygon') {
+            el.innerHTML = `✏️ วาดอิสระ — ${area.points.length} จุด`;
         }
     }
 
@@ -313,11 +396,21 @@
 
         await new Promise(resolve => {
             setTimeout(() => {
-                const results = RooftopDetector.detect(
-                    imageData, img.width, img.height,
-                    { sensitivity, minArea: minArea2, maxArea: maxArea2, areaMask },
-                    (pct, msg) => { fill.style.width = pct + '%'; text.textContent = msg; }
-                );
+                let results;
+                if (detectMode === 'roadmap') {
+                    // Road map mode: detect building blocks
+                    results = RooftopDetector.detectBlocks(
+                        imageData, img.width, img.height, areaMask, sensitivity,
+                        (pct, msg) => { fill.style.width = pct + '%'; text.textContent = msg; }
+                    );
+                } else {
+                    // Satellite mode: detect rooftops
+                    results = RooftopDetector.detect(
+                        imageData, img.width, img.height,
+                        { sensitivity, minArea: minArea2, maxArea: maxArea2, areaMask },
+                        (pct, msg) => { fill.style.width = pct + '%'; text.textContent = msg; }
+                    );
+                }
 
                 // Keep manual markers, replace auto
                 const manual = markers.filter(m => !m.auto);
@@ -358,6 +451,7 @@
 
         // Area being drawn (preview)
         if (drawStart && drawCurrent && (toolMode === 'draw-circle' || toolMode === 'draw-rect')) drawAreaPreview();
+        if (freehandDrawing && freehandPoints.length > 1) drawFreehandPreview();
 
         // Markers
         drawMarkers();
@@ -380,7 +474,12 @@
             ctx.arc(center.x, center.y, rCanvas, 0, Math.PI * 2, true);
         } else if (area.type === 'rect') {
             const p1 = i2c(area.x1, area.y1), p2 = i2c(area.x2, area.y2);
-            ctx.rect(p2.x, p1.y, p1.x - p2.x, p2.y - p1.y); // counter-clockwise to cut
+            ctx.rect(p2.x, p1.y, p1.x - p2.x, p2.y - p1.y);
+        } else if (area.type === 'polygon' && area.points.length > 2) {
+            const pts = area.points.map(p => i2c(p.x, p.y));
+            ctx.moveTo(pts[pts.length-1].x, pts[pts.length-1].y);
+            for (const p of pts) ctx.lineTo(p.x, p.y);
+            ctx.closePath();
         }
         ctx.fill('evenodd');
 
@@ -389,9 +488,15 @@
         if (area.type === 'circle') {
             const center = i2c(area.cx, area.cy);
             ctx.beginPath(); ctx.arc(center.x, center.y, area.r * scale, 0, Math.PI * 2); ctx.stroke();
-        } else {
+        } else if (area.type === 'rect') {
             const p1 = i2c(area.x1, area.y1), p2 = i2c(area.x2, area.y2);
             ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+        } else if (area.type === 'polygon') {
+            const pts = area.points.map(p => i2c(p.x, p.y));
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+            ctx.closePath(); ctx.stroke();
         }
         ctx.restore();
     }
@@ -410,6 +515,21 @@
             const w = Math.abs(drawCurrent.x - drawStart.x), h = Math.abs(drawCurrent.y - drawStart.y);
             ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
         }
+        ctx.restore();
+    }
+
+    function drawFreehandPreview() {
+        if (freehandPoints.length < 2) return;
+        ctx.save();
+        ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        const first = i2c(freehandPoints[0].x, freehandPoints[0].y);
+        ctx.moveTo(first.x, first.y);
+        for (let i = 1; i < freehandPoints.length; i++) {
+            const p = i2c(freehandPoints[i].x, freehandPoints[i].y);
+            ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
         ctx.restore();
     }
 

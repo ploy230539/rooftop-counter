@@ -413,6 +413,117 @@ const RooftopDetector = {
     },
 
     // ========================
+    //  Building Block Detector (for road map / street map images)
+    //  Detects brown/beige rectangular building blocks from OSM-style maps
+    // ========================
+    detectBlocks(imageData, w, h, areaMask, sensitivity, onProgress) {
+        const pixels = imageData.data;
+        const total = w * h;
+
+        onProgress(5, 'วิเคราะห์บล็อกอาคาร...');
+
+        // Step 1: Identify building-colored pixels
+        const mask = new Uint8Array(total);
+        const tolBase = 25 + (sensitivity - 5) * 5;
+
+        for (let i = 0; i < total; i++) {
+            if (areaMask && !areaMask[i]) continue;
+
+            const idx = i * 4;
+            const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+            const lum = (r + g + b) / 3;
+
+            if (lum > 240) continue;
+            if (lum < 80) continue;
+
+            const maxC = Math.max(r, g, b);
+            const minC = Math.min(r, g, b);
+            const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+
+            if (sat > 0.25) continue;
+            if (lum < 140 - tolBase || lum > 235) continue;
+            if (r < g - 5 || g < b - 5) continue;
+
+            const warmth = r - b;
+            if (warmth < 1 || warmth > 60) continue;
+
+            if (g > r + 3 && g > b + 3 && g - Math.min(r, b) > 12) continue;
+            if (maxC - minC < 3 && lum > 195) continue;
+
+            mask[i] = 1;
+        }
+
+        onProgress(25, 'ค้นหากลุ่มอาคาร...');
+
+        // Step 2: Light erosion — keep pixel if at least 3 of 4 neighbors are also building
+        const eroded = new Uint8Array(total);
+        for (let y = 1; y < h - 1; y++) {
+            for (let x = 1; x < w - 1; x++) {
+                const i = y * w + x;
+                if (!mask[i]) continue;
+                const neighbors = mask[i-1] + mask[i+1] + mask[i-w] + mask[i+w];
+                if (neighbors >= 3) eroded[i] = 1;
+            }
+        }
+
+        onProgress(40, 'จัดกลุ่มอาคาร...');
+
+        // Step 3: Connected component labeling
+        const { labels, count: labelCount } = this.connectedComponents(eroded, w, h);
+
+        onProgress(65, `พบ ${labelCount} กลุ่ม — กรองขนาด...`);
+
+        // Step 4: Collect component info
+        const compInfo = [];
+        for (let id = 0; id <= labelCount; id++) {
+            compInfo[id] = { area: 0, sumX: 0, sumY: 0, minX: Infinity, minY: Infinity, maxX: 0, maxY: 0 };
+        }
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const id = labels[y * w + x];
+                if (!id) continue;
+                const c = compInfo[id];
+                c.area++;
+                c.sumX += x; c.sumY += y;
+                if (x < c.minX) c.minX = x;
+                if (x > c.maxX) c.maxX = x;
+                if (y < c.minY) c.minY = y;
+                if (y > c.maxY) c.maxY = y;
+            }
+        }
+
+        // Step 5: Filter by size and shape
+        const minBuildingArea = 15;
+        const maxBuildingArea = 80000;
+        const results = [];
+
+        for (let id = 1; id <= labelCount; id++) {
+            const c = compInfo[id];
+            if (c.area < minBuildingArea || c.area > maxBuildingArea) continue;
+
+            const bw = c.maxX - c.minX + 1;
+            const bh = c.maxY - c.minY + 1;
+            const rect = c.area / (bw * bh);
+
+            if (rect < 0.4) continue;
+
+            const aspect = Math.max(bw, bh) / Math.min(bw, bh);
+            if (aspect > 8) continue;
+
+            results.push({
+                x: Math.round(c.sumX / c.area),
+                y: Math.round(c.sumY / c.area),
+                area: c.area,
+                bbox: { x: c.minX, y: c.minY, w: bw, h: bh }
+            });
+        }
+
+        onProgress(95, `พบ ${results.length} อาคาร`);
+        onProgress(100, 'เสร็จสิ้น!');
+        return results;
+    },
+
+    // ========================
     //  Connected component labeling (BFS flood fill)
     // ========================
     connectedComponents(mask, w, h) {

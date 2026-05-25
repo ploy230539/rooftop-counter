@@ -35,7 +35,7 @@
                 <!-- Image mode controls -->
                 <div id="image-controls">
                     <div class="panel">
-                        <h3>📷 อัปโหลดรูปดาวเทียม</h3>
+                        <h3>📷 อัปโหลดรูป</h3>
                         <div class="upload-area" id="sidebar-upload">
                             <input type="file" id="img-upload" accept="image/*" style="display:none">
                             <button class="btn btn-primary" id="btn-choose-file">📂 เลือกรูป</button>
@@ -46,19 +46,28 @@
                     <div class="panel">
                         <h3>🔍 ตรวจจับหลังคา</h3>
                         <div class="setting-group">
+                            <label>โหมดตรวจจับ</label>
+                            <div class="detect-mode-row" style="display:flex; gap:6px">
+                                <button id="detect-mode-satellite" class="btn btn-mode active">🛰️ ดาวเทียม</button>
+                                <button id="detect-mode-roadmap" class="btn btn-mode">🗺️ แผนที่ถนน</button>
+                            </div>
+                        </div>
+                        <div class="setting-group">
                             <label for="sensitivity">ความไว (Sensitivity)</label>
                             <input type="range" id="sensitivity" min="1" max="10" value="5" step="1">
                             <div class="range-labels">
                                 <span>น้อย</span><span>ปานกลาง</span><span>มาก</span>
                             </div>
                         </div>
-                        <div class="setting-group">
-                            <label for="min-roof-size">ขนาดหลังคาเล็กสุด (px)</label>
-                            <input type="number" id="min-roof-size" value="80" min="20" max="2000" step="10">
-                        </div>
-                        <div class="setting-group">
-                            <label for="max-roof-size">ขนาดหลังคาใหญ่สุด (px)</label>
-                            <input type="number" id="max-roof-size" value="15000" min="500" max="100000" step="100">
+                        <div id="satellite-settings">
+                            <div class="setting-group">
+                                <label for="min-roof-size">ขนาดหลังคาเล็กสุด (px)</label>
+                                <input type="number" id="min-roof-size" value="80" min="20" max="2000" step="10">
+                            </div>
+                            <div class="setting-group">
+                                <label for="max-roof-size">ขนาดหลังคาใหญ่สุด (px)</label>
+                                <input type="number" id="max-roof-size" value="15000" min="500" max="100000" step="100">
+                            </div>
                         </div>
                         <button id="btn-detect" class="btn btn-detect" disabled>
                             🤖 ตรวจจับหลังคาอัตโนมัติ
@@ -79,12 +88,13 @@
 
                     <div class="panel">
                         <h3>⭕ วงพื้นที่ตรวจจับ</h3>
-                        <p class="panel-desc">วาดวงกลม/สี่เหลี่ยมบนรูป ระบบจะตรวจจับเฉพาะในวงเท่านั้น</p>
+                        <p class="panel-desc">วาดวงกลม/สี่เหลี่ยม/อิสระ บนรูป ระบบจะตรวจจับเฉพาะในวงเท่านั้น</p>
                         <div class="tool-buttons">
                             <div class="tool-row">
                                 <button id="btn-draw-circle" class="btn btn-draw">⭕ วงกลม</button>
                                 <button id="btn-draw-rect" class="btn btn-draw">⬜ สี่เหลี่ยม</button>
                             </div>
+                            <button id="btn-draw-freehand" class="btn btn-draw" style="width:100%">✏️ วาดอิสระ (Free Hand)</button>
                             <button id="btn-clear-area" class="btn btn-outline-small">✕ ล้างวงพื้นที่</button>
                         </div>
                         <div class="area-info" id="area-info"></div>
@@ -208,8 +218,8 @@
                 <div class="image-mode" id="image-mode">
                     <div class="drop-zone" id="img-drop-zone">
                         <div class="drop-icon">🛰️</div>
-                        <p class="drop-title">ลากวางรูปดาวเทียม หรือคลิกเลือก</p>
-                        <p class="drop-sub">เช่น screenshot จาก Google Maps / Google Earth</p>
+                        <p class="drop-title">ลากวางรูป หรือคลิกเลือก</p>
+                        <p class="drop-sub">รองรับ screenshot ดาวเทียม หรือ แผนที่ถนน จาก Google Maps</p>
                         <p class="drop-hint">รองรับ JPG, PNG, WEBP</p>
                     </div>
                     <div class="canvas-wrap" id="canvas-wrap" style="display:none">
