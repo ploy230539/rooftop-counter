@@ -59,7 +59,9 @@
         // Multiple areas: ADD new area, don't clear old ones
         map.on(L.Draw.Event.CREATED, e => {
             drawnItems.addLayer(e.layer);
+            // New undetected area → enable detect button
             document.getElementById('btn-count').disabled = false;
+            document.getElementById('btn-count').textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
             updateAreaCount();
         });
 
@@ -139,8 +141,15 @@
         document.getElementById('btn-clear-ai-map').addEventListener('click', () => {
             buildingMarkers.clearLayers();
             detectedCount = 0;
+            // Reset all areas so they can be re-detected
+            drawnItems.getLayers().forEach(a => {
+                a._detected = false;
+                if (a.setStyle) a.setStyle({ color: '#f59e0b', fillColor: '#f59e0b' });
+            });
+            document.getElementById('btn-count').disabled = drawnItems.getLayers().length === 0;
+            document.getElementById('btn-count').textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
             updateCounter(); updateResults();
-            showStatus('ลบหมุด AI ทั้งหมดแล้ว');
+            showStatus('ลบหมุด AI ทั้งหมดแล้ว — กดตรวจจับใหม่ได้');
         });
 
         document.getElementById('btn-undo-map').addEventListener('click', () => {
@@ -159,6 +168,7 @@
             document.getElementById('btn-eraser-map').classList.remove('active');
             document.getElementById('btn-eraser-map').textContent = '🧹 โหมดลบหมุด AI';
             document.getElementById('btn-count').disabled = true;
+            document.getElementById('btn-count').textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
             document.getElementById('results-panel').style.display = 'none';
             document.getElementById('map-pin-counter').style.display = 'none';
             updateAreaCount();
@@ -258,6 +268,7 @@
 
         drawnItems.addLayer(polygon);
         document.getElementById('btn-count').disabled = false;
+        document.getElementById('btn-count').textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
         updateAreaCount();
         showStatus('เพิ่มพื้นที่วาดอิสระแล้ว — วาดเพิ่มหรือกดตรวจจับ');
         freehandPoints = [];
@@ -353,11 +364,20 @@
 
     // ========================
     //  AI Detection from Map Tiles
-    //  NOW: processes ALL drawn areas
+    //  - Only detects in NEW (unprocessed) areas
+    //  - Keeps existing markers from old areas
     // ========================
     async function detectFromMap() {
-        const areas = drawnItems.getLayers();
-        if (areas.length === 0 || detecting) return;
+        const allAreas = drawnItems.getLayers();
+        if (allAreas.length === 0 || detecting) return;
+
+        // Find only areas that haven't been detected yet
+        const newAreas = allAreas.filter(a => !a._detected);
+        if (newAreas.length === 0) {
+            showStatus('ทุกพื้นที่ตรวจจับแล้ว — วาดพื้นที่ใหม่เพื่อตรวจจับเพิ่ม');
+            return;
+        }
+
         detecting = true;
 
         const btn = document.getElementById('btn-count');
@@ -370,9 +390,7 @@
         bar.style.display = 'block';
         fill.style.width = '0%';
 
-        // Keep existing manual pins, clear only AI markers
-        buildingMarkers.clearLayers();
-        detectedCount = 0;
+        // DON'T clear old markers — keep results from previous areas
 
         try {
             const zoom = map.getZoom();
@@ -381,13 +399,15 @@
                 showStatus('⚠️ แนะนำ zoom เข้าไปอีก (ระดับ 16-19) เพื่อความแม่นยำ');
             }
 
-            for (let areaIdx = 0; areaIdx < areas.length; areaIdx++) {
-                const currentArea = areas[areaIdx];
-                const areaLabel = `พื้นที่ ${areaIdx + 1}/${areas.length}`;
+            let newDetected = 0;
+
+            for (let areaIdx = 0; areaIdx < newAreas.length; areaIdx++) {
+                const currentArea = newAreas[areaIdx];
+                const areaLabel = `พื้นที่ ${areaIdx + 1}/${newAreas.length}`;
                 pText.textContent = `${areaLabel}: เตรียมจับภาพ...`;
 
-                const areaProgressBase = (areaIdx / areas.length) * 100;
-                const areaProgressSpan = (1 / areas.length) * 100;
+                const areaProgressBase = (areaIdx / newAreas.length) * 100;
+                const areaProgressSpan = (1 / newAreas.length) * 100;
 
                 const bounds = currentArea.getBounds();
 
@@ -467,11 +487,11 @@
 
                 const imageData = cCtx.getImageData(0, 0, cropW, cropH);
 
-                // --- Step 4: Build area mask for circles & polygons ---
-                let areaMask = null;
+                // --- Step 4: Build area mask ---
+                // ALWAYS build areaMask for all shape types (circle, polygon, rectangle)
+                const areaMask = new Uint8Array(cropW * cropH);
 
                 if (currentArea instanceof L.Circle) {
-                    areaMask = new Uint8Array(cropW * cropH);
                     const center = currentArea.getLatLng();
                     const centerPx = map.project(center, zoom);
                     const cxLocal = centerPx.x - nwPoint.x;
@@ -490,15 +510,13 @@
                         }
                     }
                 } else if (currentArea instanceof L.Polygon) {
-                    // Build pixel mask from polygon vertices
-                    areaMask = new Uint8Array(cropW * cropH);
+                    // Works for both Polygon and Rectangle (Rectangle extends Polygon)
                     const latlngs = currentArea.getLatLngs()[0]; // outer ring
                     const polyPx = latlngs.map(ll => {
                         const pt = map.project(ll, zoom);
                         return { x: pt.x - nwPoint.x, y: pt.y - nwPoint.y };
                     });
 
-                    // Point-in-polygon (ray casting) for each pixel
                     for (let y = 0; y < cropH; y++) {
                         for (let x = 0; x < cropW; x++) {
                             if (pointInPolygon(x, y, polyPx)) {
@@ -506,6 +524,9 @@
                             }
                         }
                     }
+                } else {
+                    // Fallback: fill entire crop area
+                    areaMask.fill(1);
                 }
 
                 // --- Step 5: Run AI detector ---
@@ -527,33 +548,44 @@
                 });
 
                 // --- Step 6: Convert pixel coords → lat/lng → map markers ---
+                // STRICT: only accept results whose centroid pixel is INSIDE areaMask
                 pText.textContent = `${areaLabel}: ปักหมุด ${results.length} จุด...`;
 
+                let areaDetected = 0;
                 results.forEach(r => {
+                    // Check centroid pixel is inside the drawn area mask
+                    const px = Math.round(r.x);
+                    const py = Math.round(r.y);
+                    if (px >= 0 && px < cropW && py >= 0 && py < cropH) {
+                        if (!areaMask[py * cropW + px]) return; // OUTSIDE area → skip
+                    }
+
                     const globalPx = L.point(nwPoint.x + r.x, nwPoint.y + r.y);
                     const latlng = map.unproject(globalPx, zoom);
 
-                    // Extra containment checks
-                    if (currentArea instanceof L.Circle) {
-                        if (currentArea.getLatLng().distanceTo(latlng) > currentArea.getRadius()) return;
-                    } else if (currentArea instanceof L.Polygon) {
-                        // Use Leaflet's built-in containment for final check
-                        if (!currentArea.getBounds().contains(latlng)) return;
-                    }
-
+                    areaDetected++;
                     detectedCount++;
-                    L.marker(latlng, {
+                    const marker = L.marker(latlng, {
                         icon: L.divIcon({ className: 'map-marker', iconSize: [10, 10], iconAnchor: [5, 5] })
                     }).addTo(buildingMarkers);
+                    marker._areaLayer = currentArea; // link marker to its area
                 });
+
+                // Mark this area as detected
+                currentArea._detected = true;
+                currentArea._detectedCount = areaDetected;
+                // Change area style to show it's been processed
+                if (currentArea.setStyle) {
+                    currentArea.setStyle({ color: '#10b981', fillColor: '#10b981' });
+                }
             }
 
             fill.style.width = '100%';
-            pText.textContent = `เสร็จสิ้น! พบ ${detectedCount} หลังคา (${areas.length} พื้นที่)`;
+            pText.textContent = `เสร็จสิ้น! พบเพิ่ม ${newDetected || detectedCount} หลังคา (รวม ${detectedCount})`;
 
             updateCounter();
             updateResults();
-            showStatus(`ตรวจจับพบ ${detectedCount} หลังคา จาก ${areas.length} พื้นที่`);
+            showStatus(`ตรวจจับเสร็จ — รวม ${detectedCount} หลังคา จาก ${allAreas.filter(a => a._detected).length} พื้นที่`);
 
         } catch (e) {
             console.error('Detection error:', e);
@@ -579,8 +611,10 @@
     function resetDetectBtn() {
         detecting = false;
         const btn = document.getElementById('btn-count');
-        btn.disabled = drawnItems.getLayers().length === 0;
-        btn.textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
+        // Enable if there are any undetected areas
+        const hasNew = drawnItems.getLayers().some(a => !a._detected);
+        btn.disabled = !hasNew;
+        btn.textContent = hasNew ? '🤖 ตรวจจับหลังคาอัตโนมัติ' : '✅ ตรวจจับครบทุกพื้นที่แล้ว';
         setTimeout(() => {
             document.getElementById('map-progress-bar').style.display = 'none';
         }, 1500);
