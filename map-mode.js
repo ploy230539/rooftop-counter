@@ -1,13 +1,17 @@
 // ===== Map Mode (AI Rooftop Detection + Manual Pins) =====
 (function () {
     let map, drawnItems, buildingMarkers;
-    let currentArea = null, manualMode = false;
+    let manualMode = false;
     let manualPins = [];   // { marker, latlng }
     let detectedCount = 0;
     let mapInitialized = false;
     let detecting = false;
     let eraserMode = false;
-    let searchPin = null;  // Red pin from URL/search
+    let searchPin = null;      // Red pin from URL/search
+    let radiusCircle = null;   // Radius circle around search pin
+    let freehandMode = false;
+    let freehandPoints = [];
+    let freehandPolyline = null;
 
     function initMap() {
         if (mapInitialized) return;
@@ -43,24 +47,38 @@
         const drawControl = new L.Control.Draw({
             position: 'topright',
             draw: {
-                polygon: { shapeOptions: { color: '#f59e0b', weight: 3, fillOpacity: 0.1 } },
-                rectangle: { shapeOptions: { color: '#f59e0b', weight: 3, fillOpacity: 0.1 } },
-                circle: { shapeOptions: { color: '#f59e0b', weight: 3, fillOpacity: 0.1 } },
+                polygon: { shapeOptions: { color: '#f59e0b', weight: 3, fillOpacity: 0.15 } },
+                rectangle: { shapeOptions: { color: '#f59e0b', weight: 3, fillOpacity: 0.15 } },
+                circle: { shapeOptions: { color: '#f59e0b', weight: 3, fillOpacity: 0.15 } },
                 polyline: false, marker: false, circlemarker: false
             },
             edit: { featureGroup: drawnItems, remove: true }
         });
         map.addControl(drawControl);
 
+        // Multiple areas: ADD new area, don't clear old ones
         map.on(L.Draw.Event.CREATED, e => {
-            drawnItems.clearLayers(); buildingMarkers.clearLayers(); detectedCount = 0;
-            currentArea = e.layer; drawnItems.addLayer(currentArea);
+            drawnItems.addLayer(e.layer);
             document.getElementById('btn-count').disabled = false;
-            updateCounter();
+            updateAreaCount();
         });
+
+        // When areas are deleted via the edit control
+        map.on(L.Draw.Event.DELETED, () => {
+            updateAreaCount();
+            if (drawnItems.getLayers().length === 0) {
+                document.getElementById('btn-count').disabled = true;
+            }
+        });
+
+        // --- Freehand drawing ---
+        setupFreehand();
 
         // --- Search ---
         setupSearch();
+
+        // --- Radius slider ---
+        setupRadiusSlider();
 
         // Map click → manual pin
         map.on('click', e => {
@@ -105,7 +123,8 @@
         document.getElementById('btn-count').addEventListener('click', detectFromMap);
 
         document.getElementById('btn-manual').addEventListener('click', () => {
-            if (eraserMode) toggleEraser(); // turn off eraser first
+            if (eraserMode) toggleEraser();
+            if (freehandMode) toggleFreehand();
             manualMode = !manualMode;
             const btn = document.getElementById('btn-manual');
             btn.classList.toggle('active', manualMode);
@@ -135,24 +154,176 @@
             drawnItems.clearLayers(); buildingMarkers.clearLayers();
             manualPins.forEach(p => map.removeLayer(p.marker));
             manualPins = [];
-            currentArea = null; detectedCount = 0; eraserMode = false;
+            detectedCount = 0; eraserMode = false;
+            if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
             document.getElementById('btn-eraser-map').classList.remove('active');
             document.getElementById('btn-eraser-map').textContent = '🧹 โหมดลบหมุด AI';
             document.getElementById('btn-count').disabled = true;
             document.getElementById('results-panel').style.display = 'none';
             document.getElementById('map-pin-counter').style.display = 'none';
+            updateAreaCount();
         });
 
         document.getElementById('avg-people-map').addEventListener('change', updateResults);
     }
 
-    function toggleEraser() {
+    // ========================
+    //  Area count display
+    // ========================
+    function updateAreaCount() {
+        const count = drawnItems.getLayers().length;
+        const el = document.getElementById('area-count');
+        if (el) {
+            el.textContent = count > 0 ? `วาดแล้ว ${count} พื้นที่` : '';
+        }
+    }
+
+    // ========================
+    //  Freehand Drawing
+    // ========================
+    function setupFreehand() {
+        const btn = document.getElementById('btn-freehand');
+        if (!btn) return;
+        btn.addEventListener('click', toggleFreehand);
+    }
+
+    function toggleFreehand() {
         if (manualMode) {
-            // Turn off manual mode first
             manualMode = false;
             document.getElementById('btn-manual').classList.remove('active');
             document.getElementById('btn-manual').textContent = '📌 เปิดโหมดปักหมุด';
         }
+        if (eraserMode) toggleEraser();
+
+        freehandMode = !freehandMode;
+        const btn = document.getElementById('btn-freehand');
+        btn.classList.toggle('active', freehandMode);
+        btn.textContent = freehandMode ? '✏️ กำลังวาด... (ลากเมาส์แล้วปล่อย)' : '✏️ วาดอิสระ (Free Hand)';
+        map.getContainer().style.cursor = freehandMode ? 'crosshair' : '';
+
+        if (freehandMode) {
+            map.dragging.disable();
+            showStatus('กดเมาส์ค้าง แล้วลากวาดพื้นที่ → ปล่อยเพื่อปิดรูป');
+
+            map.on('mousedown', freehandStart);
+        } else {
+            map.dragging.enable();
+            map.off('mousedown', freehandStart);
+            map.off('mousemove', freehandDraw);
+            map.off('mouseup', freehandEnd);
+            if (freehandPolyline) { map.removeLayer(freehandPolyline); freehandPolyline = null; }
+            freehandPoints = [];
+            showStatus('');
+        }
+    }
+
+    function freehandStart(e) {
+        freehandPoints = [e.latlng];
+        if (freehandPolyline) { map.removeLayer(freehandPolyline); }
+        freehandPolyline = L.polyline(freehandPoints, {
+            color: '#f59e0b', weight: 3, dashArray: '6,4'
+        }).addTo(map);
+        map.on('mousemove', freehandDraw);
+        map.on('mouseup', freehandEnd);
+    }
+
+    function freehandDraw(e) {
+        freehandPoints.push(e.latlng);
+        freehandPolyline.addLatLng(e.latlng);
+    }
+
+    function freehandEnd() {
+        map.off('mousemove', freehandDraw);
+        map.off('mouseup', freehandEnd);
+        if (freehandPolyline) { map.removeLayer(freehandPolyline); freehandPolyline = null; }
+
+        if (freehandPoints.length < 5) {
+            showStatus('วาดน้อยเกินไป — ลองลากให้ยาวขึ้น');
+            freehandPoints = [];
+            return;
+        }
+
+        // Simplify: keep every Nth point
+        const simplified = [];
+        const step = Math.max(1, Math.floor(freehandPoints.length / 80));
+        for (let i = 0; i < freehandPoints.length; i += step) {
+            simplified.push(freehandPoints[i]);
+        }
+        // Close the polygon
+        simplified.push(simplified[0]);
+
+        const polygon = L.polygon(simplified, {
+            color: '#f59e0b', weight: 3, fillOpacity: 0.15, fillColor: '#f59e0b'
+        });
+
+        drawnItems.addLayer(polygon);
+        document.getElementById('btn-count').disabled = false;
+        updateAreaCount();
+        showStatus('เพิ่มพื้นที่วาดอิสระแล้ว — วาดเพิ่มหรือกดตรวจจับ');
+        freehandPoints = [];
+    }
+
+    // ========================
+    //  Radius Circle from Search Pin
+    // ========================
+    function setupRadiusSlider() {
+        const slider = document.getElementById('radius-slider');
+        const label = document.getElementById('radius-label');
+        const addBtn = document.getElementById('btn-add-radius');
+        if (!slider || !addBtn) return;
+
+        function formatRadius(m) {
+            return m >= 1000 ? (m / 1000).toFixed(1) + ' กม.' : m + ' ม.';
+        }
+
+        slider.addEventListener('input', () => {
+            const val = parseInt(slider.value);
+            label.textContent = formatRadius(val);
+
+            // Update live preview circle
+            if (searchPin) {
+                const center = searchPin.getLatLng();
+                if (radiusCircle) map.removeLayer(radiusCircle);
+                radiusCircle = L.circle(center, {
+                    radius: val,
+                    color: '#3b82f6', weight: 2,
+                    fillColor: '#3b82f6', fillOpacity: 0.08,
+                    dashArray: '8,6'
+                }).addTo(map);
+            }
+        });
+
+        addBtn.addEventListener('click', () => {
+            if (!searchPin) {
+                showStatus('⚠️ ค้นหาสถานที่ก่อน แล้วจึงกำหนดรัศมี');
+                return;
+            }
+            const val = parseInt(slider.value);
+            const center = searchPin.getLatLng();
+
+            // Add the radius circle as a detection area
+            const areaCircle = L.circle(center, {
+                radius: val,
+                color: '#3b82f6', weight: 3,
+                fillColor: '#3b82f6', fillOpacity: 0.08
+            });
+            drawnItems.addLayer(areaCircle);
+            document.getElementById('btn-count').disabled = false;
+            updateAreaCount();
+
+            // Fit map to see the full radius
+            map.fitBounds(areaCircle.getBounds(), { padding: [30, 30] });
+            showStatus(`เพิ่มรัศมี ${formatRadius(val)} เป็นพื้นที่ตรวจจับ — วาดเพิ่มหรือกดตรวจจับ`);
+        });
+    }
+
+    function toggleEraser() {
+        if (manualMode) {
+            manualMode = false;
+            document.getElementById('btn-manual').classList.remove('active');
+            document.getElementById('btn-manual').textContent = '📌 เปิดโหมดปักหมุด';
+        }
+        if (freehandMode) toggleFreehand();
         eraserMode = !eraserMode;
         const btn = document.getElementById('btn-eraser-map');
         btn.classList.toggle('active', eraserMode);
@@ -169,7 +340,6 @@
                     updateCounter(); updateResults();
                 };
                 marker.on('click', marker._eraserHandler);
-                // Make cursor pointer on hover
                 if (marker._icon) marker._icon.style.cursor = 'pointer';
             } else {
                 if (marker._eraserHandler) {
@@ -183,9 +353,11 @@
 
     // ========================
     //  AI Detection from Map Tiles
+    //  NOW: processes ALL drawn areas
     // ========================
     async function detectFromMap() {
-        if (!currentArea || detecting) return;
+        const areas = drawnItems.getLayers();
+        if (areas.length === 0 || detecting) return;
         detecting = true;
 
         const btn = document.getElementById('btn-count');
@@ -197,168 +369,191 @@
         const pText = document.getElementById('map-progress-text');
         bar.style.display = 'block';
         fill.style.width = '0%';
-        pText.textContent = 'เตรียมจับภาพ...';
 
+        // Keep existing manual pins, clear only AI markers
         buildingMarkers.clearLayers();
         detectedCount = 0;
 
         try {
-            const bounds = currentArea.getBounds();
             const zoom = map.getZoom();
 
-            // Recommend zoom level
             if (zoom < 15) {
                 showStatus('⚠️ แนะนำ zoom เข้าไปอีก (ระดับ 16-19) เพื่อความแม่นยำ');
             }
 
-            // --- Step 1: Calculate tile range ---
-            const nwPoint = map.project(bounds.getNorthWest(), zoom);
-            const sePoint = map.project(bounds.getSouthEast(), zoom);
+            for (let areaIdx = 0; areaIdx < areas.length; areaIdx++) {
+                const currentArea = areas[areaIdx];
+                const areaLabel = `พื้นที่ ${areaIdx + 1}/${areas.length}`;
+                pText.textContent = `${areaLabel}: เตรียมจับภาพ...`;
 
-            const tileSize = 256;
-            const minTX = Math.floor(nwPoint.x / tileSize);
-            const minTY = Math.floor(nwPoint.y / tileSize);
-            const maxTX = Math.floor(sePoint.x / tileSize);
-            const maxTY = Math.floor(sePoint.y / tileSize);
+                const areaProgressBase = (areaIdx / areas.length) * 100;
+                const areaProgressSpan = (1 / areas.length) * 100;
 
-            const tilesW = maxTX - minTX + 1;
-            const tilesH = maxTY - minTY + 1;
-            const totalTiles = tilesW * tilesH;
+                const bounds = currentArea.getBounds();
 
-            if (totalTiles > 120) {
-                showStatus('⚠️ พื้นที่ใหญ่เกินไป — กรุณา zoom เข้าหรือวาดพื้นที่เล็กลง');
-                resetDetectBtn();
-                return;
-            }
+                // --- Step 1: Calculate tile range ---
+                const nwPoint = map.project(bounds.getNorthWest(), zoom);
+                const sePoint = map.project(bounds.getSouthEast(), zoom);
 
-            // --- Step 2: Download & stitch tiles ---
-            pText.textContent = `โหลด tile 0/${totalTiles}`;
-            fill.style.width = '5%';
+                const tileSize = 256;
+                const minTX = Math.floor(nwPoint.x / tileSize);
+                const minTY = Math.floor(nwPoint.y / tileSize);
+                const maxTX = Math.floor(sePoint.x / tileSize);
+                const maxTY = Math.floor(sePoint.y / tileSize);
 
-            const stitchCanvas = document.createElement('canvas');
-            stitchCanvas.width = tilesW * tileSize;
-            stitchCanvas.height = tilesH * tileSize;
-            const sCtx = stitchCanvas.getContext('2d');
+                const tilesW = maxTX - minTX + 1;
+                const tilesH = maxTY - minTY + 1;
+                const totalTiles = tilesW * tilesH;
 
-            const tileUrlTemplate = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-            let loaded = 0;
-
-            const loadPromises = [];
-            for (let ty = minTY; ty <= maxTY; ty++) {
-                for (let tx = minTX; tx <= maxTX; tx++) {
-                    const url = tileUrlTemplate
-                        .replace('{z}', zoom)
-                        .replace('{y}', ty)
-                        .replace('{x}', tx);
-                    const drawX = (tx - minTX) * tileSize;
-                    const drawY = (ty - minTY) * tileSize;
-
-                    loadPromises.push(new Promise(resolve => {
-                        const tileImg = new Image();
-                        tileImg.crossOrigin = 'anonymous';
-                        tileImg.onload = () => {
-                            sCtx.drawImage(tileImg, drawX, drawY);
-                            loaded++;
-                            pText.textContent = `โหลด tile ${loaded}/${totalTiles}`;
-                            fill.style.width = (5 + (loaded / totalTiles) * 20) + '%';
-                            resolve(true);
-                        };
-                        tileImg.onerror = () => { loaded++; resolve(false); };
-                        tileImg.src = url;
-                    }));
+                if (totalTiles > 120) {
+                    showStatus(`⚠️ ${areaLabel} ใหญ่เกินไป — ข้าม`);
+                    continue;
                 }
-            }
 
-            await Promise.all(loadPromises);
+                // --- Step 2: Download & stitch tiles ---
+                pText.textContent = `${areaLabel}: โหลด tile 0/${totalTiles}`;
+                fill.style.width = (areaProgressBase + areaProgressSpan * 0.05) + '%';
 
-            // --- Step 3: Crop to area bounds ---
-            pText.textContent = 'ตัดภาพพื้นที่...';
-            fill.style.width = '28%';
+                const stitchCanvas = document.createElement('canvas');
+                stitchCanvas.width = tilesW * tileSize;
+                stitchCanvas.height = tilesH * tileSize;
+                const sCtx = stitchCanvas.getContext('2d');
 
-            const cropX = Math.round(nwPoint.x - minTX * tileSize);
-            const cropY = Math.round(nwPoint.y - minTY * tileSize);
-            const cropW = Math.max(1, Math.round(sePoint.x - nwPoint.x));
-            const cropH = Math.max(1, Math.round(sePoint.y - nwPoint.y));
+                const tileUrlTemplate = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+                let loaded = 0;
 
-            const cropCanvas = document.createElement('canvas');
-            cropCanvas.width = cropW;
-            cropCanvas.height = cropH;
-            const cCtx = cropCanvas.getContext('2d');
-            cCtx.drawImage(stitchCanvas, -cropX, -cropY);
+                const loadPromises = [];
+                for (let ty = minTY; ty <= maxTY; ty++) {
+                    for (let tx = minTX; tx <= maxTX; tx++) {
+                        const url = tileUrlTemplate
+                            .replace('{z}', zoom)
+                            .replace('{y}', ty)
+                            .replace('{x}', tx);
+                        const drawX = (tx - minTX) * tileSize;
+                        const drawY = (ty - minTY) * tileSize;
 
-            const imageData = cCtx.getImageData(0, 0, cropW, cropH);
+                        loadPromises.push(new Promise(resolve => {
+                            const tileImg = new Image();
+                            tileImg.crossOrigin = 'anonymous';
+                            tileImg.onload = () => {
+                                sCtx.drawImage(tileImg, drawX, drawY);
+                                loaded++;
+                                pText.textContent = `${areaLabel}: โหลด tile ${loaded}/${totalTiles}`;
+                                fill.style.width = (areaProgressBase + areaProgressSpan * (0.05 + (loaded / totalTiles) * 0.2)) + '%';
+                                resolve(true);
+                            };
+                            tileImg.onerror = () => { loaded++; resolve(false); };
+                            tileImg.src = url;
+                        }));
+                    }
+                }
 
-            // --- Step 4: Build area mask for circles ---
-            let areaMask = null;
-            if (currentArea instanceof L.Circle) {
-                areaMask = new Uint8Array(cropW * cropH);
-                const center = currentArea.getLatLng();
-                const centerPx = map.project(center, zoom);
-                const cxLocal = centerPx.x - nwPoint.x;
-                const cyLocal = centerPx.y - nwPoint.y;
+                await Promise.all(loadPromises);
 
-                // Convert radius (meters) to pixels
-                const radiusM = currentArea.getRadius();
-                const offsetLng = radiusM / (6378137 * Math.cos(center.lat * Math.PI / 180)) * (180 / Math.PI);
-                const edgePx = map.project(L.latLng(center.lat, center.lng + offsetLng), zoom);
-                const radiusPx = Math.abs(edgePx.x - centerPx.x);
+                // --- Step 3: Crop to area bounds ---
+                pText.textContent = `${areaLabel}: ตัดภาพพื้นที่...`;
+                fill.style.width = (areaProgressBase + areaProgressSpan * 0.28) + '%';
 
-                for (let y = 0; y < cropH; y++) {
-                    for (let x = 0; x < cropW; x++) {
-                        if (Math.hypot(x - cxLocal, y - cyLocal) <= radiusPx) {
-                            areaMask[y * cropW + x] = 1;
+                const cropX = Math.round(nwPoint.x - minTX * tileSize);
+                const cropY = Math.round(nwPoint.y - minTY * tileSize);
+                const cropW = Math.max(1, Math.round(sePoint.x - nwPoint.x));
+                const cropH = Math.max(1, Math.round(sePoint.y - nwPoint.y));
+
+                const cropCanvas = document.createElement('canvas');
+                cropCanvas.width = cropW;
+                cropCanvas.height = cropH;
+                const cCtx = cropCanvas.getContext('2d');
+                cCtx.drawImage(stitchCanvas, -cropX, -cropY);
+
+                const imageData = cCtx.getImageData(0, 0, cropW, cropH);
+
+                // --- Step 4: Build area mask for circles & polygons ---
+                let areaMask = null;
+
+                if (currentArea instanceof L.Circle) {
+                    areaMask = new Uint8Array(cropW * cropH);
+                    const center = currentArea.getLatLng();
+                    const centerPx = map.project(center, zoom);
+                    const cxLocal = centerPx.x - nwPoint.x;
+                    const cyLocal = centerPx.y - nwPoint.y;
+
+                    const radiusM = currentArea.getRadius();
+                    const offsetLng = radiusM / (6378137 * Math.cos(center.lat * Math.PI / 180)) * (180 / Math.PI);
+                    const edgePx = map.project(L.latLng(center.lat, center.lng + offsetLng), zoom);
+                    const radiusPx = Math.abs(edgePx.x - centerPx.x);
+
+                    for (let y = 0; y < cropH; y++) {
+                        for (let x = 0; x < cropW; x++) {
+                            if (Math.hypot(x - cxLocal, y - cyLocal) <= radiusPx) {
+                                areaMask[y * cropW + x] = 1;
+                            }
+                        }
+                    }
+                } else if (currentArea instanceof L.Polygon) {
+                    // Build pixel mask from polygon vertices
+                    areaMask = new Uint8Array(cropW * cropH);
+                    const latlngs = currentArea.getLatLngs()[0]; // outer ring
+                    const polyPx = latlngs.map(ll => {
+                        const pt = map.project(ll, zoom);
+                        return { x: pt.x - nwPoint.x, y: pt.y - nwPoint.y };
+                    });
+
+                    // Point-in-polygon (ray casting) for each pixel
+                    for (let y = 0; y < cropH; y++) {
+                        for (let x = 0; x < cropW; x++) {
+                            if (pointInPolygon(x, y, polyPx)) {
+                                areaMask[y * cropW + x] = 1;
+                            }
                         }
                     }
                 }
+
+                // --- Step 5: Run AI detector ---
+                pText.textContent = `${areaLabel}: กำลังตรวจจับหลังคา...`;
+                fill.style.width = (areaProgressBase + areaProgressSpan * 0.30) + '%';
+
+                await new Promise(resolve => setTimeout(resolve, 50));
+
+                const sensitivity = parseInt(document.getElementById('map-sensitivity').value) || 5;
+                const minArea = getAutoMinArea(zoom);
+                const maxArea = getAutoMaxArea(zoom);
+
+                const results = RooftopDetector.detect(imageData, cropW, cropH, {
+                    sensitivity, minArea, maxArea, areaMask
+                }, (pct, msg) => {
+                    const overall = areaProgressBase + areaProgressSpan * (0.30 + pct * 0.0065);
+                    fill.style.width = Math.min(overall, areaProgressBase + areaProgressSpan * 0.95) + '%';
+                    pText.textContent = `${areaLabel}: ${msg}`;
+                });
+
+                // --- Step 6: Convert pixel coords → lat/lng → map markers ---
+                pText.textContent = `${areaLabel}: ปักหมุด ${results.length} จุด...`;
+
+                results.forEach(r => {
+                    const globalPx = L.point(nwPoint.x + r.x, nwPoint.y + r.y);
+                    const latlng = map.unproject(globalPx, zoom);
+
+                    // Extra containment checks
+                    if (currentArea instanceof L.Circle) {
+                        if (currentArea.getLatLng().distanceTo(latlng) > currentArea.getRadius()) return;
+                    } else if (currentArea instanceof L.Polygon) {
+                        // Use Leaflet's built-in containment for final check
+                        if (!currentArea.getBounds().contains(latlng)) return;
+                    }
+
+                    detectedCount++;
+                    L.marker(latlng, {
+                        icon: L.divIcon({ className: 'map-marker', iconSize: [10, 10], iconAnchor: [5, 5] })
+                    }).addTo(buildingMarkers);
+                });
             }
 
-            // --- Step 5: Run AI detector ---
-            pText.textContent = 'กำลังตรวจจับหลังคา...';
-            fill.style.width = '30%';
-
-            await new Promise(resolve => setTimeout(resolve, 50)); // Let UI update
-
-            const sensitivity = parseInt(document.getElementById('map-sensitivity').value) || 5;
-            const minArea = getAutoMinArea(zoom);
-            const maxArea = getAutoMaxArea(zoom);
-
-            const results = RooftopDetector.detect(imageData, cropW, cropH, {
-                sensitivity,
-                minArea,
-                maxArea,
-                areaMask
-            }, (pct, msg) => {
-                const overall = 30 + pct * 0.65;
-                fill.style.width = overall + '%';
-                pText.textContent = msg;
-            });
-
-            // --- Step 6: Convert pixel coords → lat/lng → map markers ---
-            pText.textContent = `ปักหมุด ${results.length} จุด...`;
-            fill.style.width = '96%';
-
-            detectedCount = 0;
-            results.forEach(r => {
-                const globalPx = L.point(nwPoint.x + r.x, nwPoint.y + r.y);
-                const latlng = map.unproject(globalPx, zoom);
-
-                // Extra check for circle containment
-                if (currentArea instanceof L.Circle) {
-                    if (currentArea.getLatLng().distanceTo(latlng) > currentArea.getRadius()) return;
-                }
-
-                detectedCount++;
-                L.marker(latlng, {
-                    icon: L.divIcon({ className: 'map-marker', iconSize: [10, 10], iconAnchor: [5, 5] })
-                }).addTo(buildingMarkers);
-            });
-
             fill.style.width = '100%';
-            pText.textContent = `เสร็จสิ้น! พบ ${detectedCount} หลังคา`;
+            pText.textContent = `เสร็จสิ้น! พบ ${detectedCount} หลังคา (${areas.length} พื้นที่)`;
 
             updateCounter();
             updateResults();
-            showStatus(`ตรวจจับพบ ${detectedCount} หลังคา — ปักหมุดเพิ่มได้ถ้าตกหล่น`);
+            showStatus(`ตรวจจับพบ ${detectedCount} หลังคา จาก ${areas.length} พื้นที่`);
 
         } catch (e) {
             console.error('Detection error:', e);
@@ -368,10 +563,23 @@
         resetDetectBtn();
     }
 
+    // Ray casting point-in-polygon test
+    function pointInPolygon(x, y, polygon) {
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i].x, yi = polygon[i].y;
+            const xj = polygon[j].x, yj = polygon[j].y;
+            if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+                inside = !inside;
+            }
+        }
+        return inside;
+    }
+
     function resetDetectBtn() {
         detecting = false;
         const btn = document.getElementById('btn-count');
-        btn.disabled = !currentArea;
+        btn.disabled = drawnItems.getLayers().length === 0;
         btn.textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
         setTimeout(() => {
             document.getElementById('map-progress-bar').style.display = 'none';
@@ -399,7 +607,6 @@
 
     // ========================
     //  Smart Location Search
-    //  Supports: Google Maps URL, coordinates, place name
     // ========================
     function setupSearch() {
         const input = document.getElementById('map-search');
@@ -407,7 +614,6 @@
         const resultsEl = document.getElementById('search-results');
         let searchTimeout = null;
 
-        // Open Google Maps in new tab
         document.getElementById('btn-open-gmaps').addEventListener('click', () => {
             const c = map.getCenter();
             const z = map.getZoom();
@@ -418,10 +624,8 @@
             const query = input.value.trim();
             if (!query) { resultsEl.classList.remove('show'); return; }
 
-            // --- Try 1: Google Maps full URL (has coordinates) ---
             const gmResult = parseGoogleMapsUrl(query);
             if (gmResult) {
-                // Try to extract place name from URL: /place/NAME/@...
                 let placeName = 'Google Maps URL';
                 const placeMatch = query.match(/\/place\/([^/@]+)/);
                 if (placeMatch) {
@@ -432,9 +636,7 @@
                 return;
             }
 
-            // --- Try 2: Shortened Google Maps URL (goo.gl / maps.app.goo.gl) ---
             if (isShortGoogleUrl(query)) {
-                // Open the short URL in a new tab → Google will redirect to full URL
                 window.open(query, '_blank');
                 resultsEl.innerHTML = `
                     <div class="search-item" style="cursor:default; background:#1e3a5f; border:1px solid #3b82f6;">
@@ -451,7 +653,6 @@
                 return;
             }
 
-            // --- Try 3: Raw coordinates (lat, lng) ---
             const coordResult = parseCoordinates(query);
             if (coordResult) {
                 goToLocation(coordResult.lat, coordResult.lng, 17, 'พิกัด');
@@ -459,31 +660,25 @@
                 return;
             }
 
-            // --- Try 4: Text search via Nominatim ---
             searchNominatim(query);
         }
 
         function parseGoogleMapsUrl(text) {
             if (!text.includes('google.com/maps') && !text.includes('maps.google')) return null;
 
-            // Get zoom from @lat,lng,zoomz (map view center)
             let zoom = 17;
             const zoomMatch = text.match(/@[^,]+,[^,]+,(\d+\.?\d*)z/);
             if (zoomMatch) zoom = Math.round(parseFloat(zoomMatch[1]));
 
-            // Priority 1: Place pin coordinates from data parameter (!3d=lat, !4d=lng)
-            // These are the ACTUAL place coordinates, not the map view center
             const lat3d = text.match(/!3d(-?\d+\.?\d+)/);
             const lng4d = text.match(/!4d(-?\d+\.?\d+)/);
             if (lat3d && lng4d) {
                 return { lat: parseFloat(lat3d[1]), lng: parseFloat(lng4d[1]), zoom };
             }
 
-            // Priority 2: ?q=lat,lng or &ll=lat,lng or &center=lat,lng
             let m = text.match(/[?&](?:q|ll|center)=(-?\d+\.?\d*),(-?\d+\.?\d*)/);
             if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom };
 
-            // Priority 3: @lat,lng (map view center — fallback)
             m = text.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
             if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]), zoom };
 
@@ -495,11 +690,9 @@
         }
 
         function parseCoordinates(text) {
-            // "13.7563, 100.5018" or "13.7563 100.5018"
             const m = text.match(/^(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)$/);
             if (m) {
                 const a = parseFloat(m[1]), b = parseFloat(m[2]);
-                // Validate lat/lng ranges
                 if (Math.abs(a) <= 90 && Math.abs(b) <= 180) return { lat: a, lng: b };
                 if (Math.abs(b) <= 90 && Math.abs(a) <= 180) return { lat: b, lng: a };
             }
@@ -509,13 +702,9 @@
         function goToLocation(lat, lng, zoom, source) {
             zoom = Math.min(Math.max(zoom, 10), 19);
 
-            // Remove previous search pin
-            if (searchPin) {
-                map.removeLayer(searchPin);
-                searchPin = null;
-            }
+            if (searchPin) { map.removeLayer(searchPin); searchPin = null; }
+            if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
 
-            // Add red pin marker at searched location
             searchPin = L.marker([lat, lng], {
                 icon: L.icon({
                     iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
@@ -530,6 +719,22 @@
 
             map.flyTo([lat, lng], zoom, { duration: 1.5 });
             showStatus(`📍 ไปยังพิกัด ${lat.toFixed(4)}, ${lng.toFixed(4)} (${source})`);
+
+            // Show radius panel
+            const radiusPanel = document.getElementById('radius-panel');
+            if (radiusPanel) radiusPanel.style.display = 'block';
+
+            // Show initial radius preview
+            const slider = document.getElementById('radius-slider');
+            if (slider) {
+                const val = parseInt(slider.value);
+                radiusCircle = L.circle([lat, lng], {
+                    radius: val,
+                    color: '#3b82f6', weight: 2,
+                    fillColor: '#3b82f6', fillOpacity: 0.08,
+                    dashArray: '8,6'
+                }).addTo(map);
+            }
         }
 
         function searchNominatim(query) {
@@ -582,7 +787,6 @@
             if (e.key === 'Enter') { e.preventDefault(); doSearch(); }
         });
 
-        // Auto-detect paste (Google Maps URL, short URL, or coords → go immediately)
         input.addEventListener('paste', () => {
             setTimeout(() => {
                 input.setAttribute('placeholder', 'วาง Google Maps URL, พิกัด, หรือชื่อสถานที่...');
@@ -596,7 +800,6 @@
         input.addEventListener('input', () => {
             clearTimeout(searchTimeout);
             const q = input.value.trim();
-            // Don't auto-search URLs/coordinates — those go on Enter/paste
             if (q.length >= 3 && !q.includes('google') && !q.includes('goo.gl') && !q.match(/^-?\d+\.?\d*[,\s]/)) {
                 searchTimeout = setTimeout(doSearch, 800);
             } else {

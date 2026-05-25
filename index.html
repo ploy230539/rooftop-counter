@@ -118,9 +118,29 @@
                         <button id="btn-open-gmaps" class="btn btn-outline-small" style="margin-top:6px">🗺️ เปิด Google Maps เพื่อค้นหา → คัดลอก URL กลับมาวาง</button>
                     </div>
 
+                    <!-- Radius from pin -->
+                    <div class="panel" id="radius-panel" style="display:none">
+                        <h3>📏 รัศมีจากหมุด</h3>
+                        <p class="panel-desc">กำหนดรัศมีรอบจุดค้นหา แล้วเพิ่มเป็นพื้นที่ตรวจจับ</p>
+                        <div class="setting-group">
+                            <label>รัศมี: <span id="radius-label">500 ม.</span></label>
+                            <input type="range" id="radius-slider" min="100" max="5000" value="500" step="100">
+                            <div class="range-labels">
+                                <span>100 ม.</span><span>2.5 กม.</span><span>5 กม.</span>
+                            </div>
+                        </div>
+                        <button id="btn-add-radius" class="btn btn-outline" style="background:rgba(59,130,246,0.15)">
+                            ➕ เพิ่มรัศมีเป็นพื้นที่ตรวจจับ
+                        </button>
+                    </div>
+
                     <div class="panel">
                         <h3>🤖 ตรวจจับหลังคา</h3>
-                        <p class="panel-desc">วาดพื้นที่บนแผนที่ (ใช้เครื่องมือขวาบน) แล้วกดตรวจจับ</p>
+                        <p class="panel-desc">วาดพื้นที่หลายจุดได้ (ไม่ลบวงเดิม) แล้วกดตรวจจับทุกพื้นที่พร้อมกัน</p>
+                        <div class="tool-row" style="margin-bottom:8px">
+                            <button id="btn-freehand" class="btn btn-draw">✏️ วาดอิสระ (Free Hand)</button>
+                        </div>
+                        <div class="area-info" id="area-count"></div>
                         <div class="setting-group">
                             <label for="map-sensitivity">ความไว (Sensitivity)</label>
                             <input type="range" id="map-sensitivity" min="1" max="10" value="5" step="1">
