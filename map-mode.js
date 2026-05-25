@@ -13,6 +13,7 @@
     let activeLayer = 'road';  // 'road' or 'satellite'
     let freehandPoints = [];
     let freehandPolyline = null;
+    let drawControl = null;
 
     function initMap() {
         if (mapInitialized) return;
@@ -23,7 +24,8 @@
         // Road map (default) — OpenStreetMap
         const roadMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors',
-            maxZoom: 19
+            maxZoom: 19,
+            crossOrigin: 'anonymous'
         });
 
         // Satellite — Esri World Imagery
@@ -50,7 +52,7 @@
         drawnItems = new L.FeatureGroup().addTo(map);
         buildingMarkers = new L.FeatureGroup().addTo(map);
 
-        const drawControl = new L.Control.Draw({
+        drawControl = new L.Control.Draw({
             position: 'topright',
             draw: {
                 polygon: { shapeOptions: { color: '#f59e0b', weight: 3, fillOpacity: 0.15 } },
@@ -61,6 +63,18 @@
             edit: { featureGroup: drawnItems, remove: true }
         });
         map.addControl(drawControl);
+
+        // When a Leaflet Draw tool is clicked, deactivate freehand/manual/eraser
+        // Use DOM click on toolbar (more reliable than draw:drawstart when other modes are active)
+        const drawToolbar = map.getContainer().querySelector('.leaflet-draw');
+        if (drawToolbar) {
+            drawToolbar.addEventListener('mousedown', e => {
+                if (e.target.closest('.leaflet-draw-draw-polygon, .leaflet-draw-draw-rectangle, .leaflet-draw-draw-circle')) {
+                    deactivateAllModes();
+                }
+            }, true);
+        }
+        map.on('draw:drawstart', deactivateAllModes);
 
         // Multiple areas: ADD new area, don't clear old ones
         map.on(L.Draw.Event.CREATED, e => {
@@ -131,15 +145,18 @@
         document.getElementById('btn-count').addEventListener('click', detectFromMap);
 
         document.getElementById('btn-manual').addEventListener('click', () => {
-            if (eraserMode) toggleEraser();
-            if (freehandMode) toggleFreehand();
-            manualMode = !manualMode;
-            const btn = document.getElementById('btn-manual');
-            btn.classList.toggle('active', manualMode);
-            btn.textContent = manualMode ? '📌 ปักหมุด (กำลังใช้ — คลิกแผนที่)' : '📌 เปิดโหมดปักหมุด';
-            map.getContainer().style.cursor = manualMode ? 'crosshair' : '';
-            document.getElementById('btn-undo-map').style.display = manualMode ? 'block' : 'none';
-            showStatus(manualMode ? 'คลิกหลังคา = เพิ่มหมุด (🟡) | คลิกหมุดเดิม = ลบ' : '');
+            const wasManual = manualMode;
+            deactivateAllModes();
+            cancelLeafletDraw();
+            if (!wasManual) {
+                manualMode = true;
+                const btn = document.getElementById('btn-manual');
+                btn.classList.add('active');
+                btn.textContent = '📌 ปักหมุด (กำลังใช้ — คลิกแผนที่)';
+                map.getContainer().style.cursor = 'crosshair';
+                document.getElementById('btn-undo-map').style.display = 'block';
+                showStatus('คลิกหลังคา = เพิ่มหมุด (🟡) | คลิกหมุดเดิม = ลบ');
+            }
         });
 
         document.getElementById('btn-eraser-map').addEventListener('click', toggleEraser);
@@ -212,33 +229,64 @@
         btn.addEventListener('click', toggleFreehand);
     }
 
-    function toggleFreehand() {
-        if (manualMode) {
-            manualMode = false;
-            document.getElementById('btn-manual').classList.remove('active');
-            document.getElementById('btn-manual').textContent = '📌 เปิดโหมดปักหมุด';
-        }
-        if (eraserMode) toggleEraser();
+    function cancelLeafletDraw() {
+        if (!drawControl) return;
+        const cancelBtn = document.querySelector('.leaflet-draw-actions a[title="Cancel drawing"]') ||
+                          document.querySelector('.leaflet-draw-actions li:last-child a');
+        if (cancelBtn) cancelBtn.click();
+    }
 
-        freehandMode = !freehandMode;
-        const btn = document.getElementById('btn-freehand');
-        btn.classList.toggle('active', freehandMode);
-        btn.textContent = freehandMode ? '✏️ กำลังวาด... (ลากเมาส์แล้วปล่อย)' : '✏️ วาดอิสระ (Free Hand)';
-        map.getContainer().style.cursor = freehandMode ? 'crosshair' : '';
-
+    function deactivateAllModes() {
         if (freehandMode) {
-            map.dragging.disable();
-            showStatus('กดเมาส์ค้าง แล้วลากวาดพื้นที่ → ปล่อยเพื่อปิดรูป');
-
-            map.on('mousedown', freehandStart);
-        } else {
+            freehandMode = false;
+            const fbtn = document.getElementById('btn-freehand');
+            fbtn.classList.remove('active');
+            fbtn.textContent = '✏️ วาดอิสระ (Free Hand)';
             map.dragging.enable();
             map.off('mousedown', freehandStart);
             map.off('mousemove', freehandDraw);
             map.off('mouseup', freehandEnd);
             if (freehandPolyline) { map.removeLayer(freehandPolyline); freehandPolyline = null; }
             freehandPoints = [];
-            showStatus('');
+        }
+        if (manualMode) {
+            manualMode = false;
+            const mbtn = document.getElementById('btn-manual');
+            mbtn.classList.remove('active');
+            mbtn.textContent = '📌 เปิดโหมดปักหมุด';
+            document.getElementById('btn-undo-map').style.display = 'none';
+        }
+        if (eraserMode) {
+            eraserMode = false;
+            const ebtn = document.getElementById('btn-eraser-map');
+            ebtn.classList.remove('active');
+            ebtn.textContent = '🧹 โหมดลบหมุด AI';
+            buildingMarkers.eachLayer(marker => {
+                if (marker._eraserHandler) {
+                    marker.off('click', marker._eraserHandler);
+                    delete marker._eraserHandler;
+                }
+                if (marker._icon) marker._icon.style.cursor = '';
+            });
+        }
+        map.getContainer().style.cursor = '';
+        showStatus('');
+    }
+
+    function toggleFreehand() {
+        const wasFreehand = freehandMode;
+        deactivateAllModes();
+        cancelLeafletDraw();
+
+        if (!wasFreehand) {
+            freehandMode = true;
+            const btn = document.getElementById('btn-freehand');
+            btn.classList.add('active');
+            btn.textContent = '✏️ กำลังวาด... (ลากเมาส์แล้วปล่อย)';
+            map.getContainer().style.cursor = 'crosshair';
+            map.dragging.disable();
+            map.on('mousedown', freehandStart);
+            showStatus('กดเมาส์ค้าง แล้วลากวาดพื้นที่ → ปล่อยเพื่อปิดรูป');
         }
     }
 
@@ -366,18 +414,18 @@
     }
 
     function toggleEraser() {
-        if (manualMode) {
-            manualMode = false;
-            document.getElementById('btn-manual').classList.remove('active');
-            document.getElementById('btn-manual').textContent = '📌 เปิดโหมดปักหมุด';
+        const wasEraser = eraserMode;
+        deactivateAllModes();
+        cancelLeafletDraw();
+
+        if (!wasEraser) {
+            eraserMode = true;
+            const btn = document.getElementById('btn-eraser-map');
+            btn.classList.add('active');
+            btn.textContent = '🧹 ลบหมุด (กำลังใช้ — คลิกหมุด)';
+            map.getContainer().style.cursor = 'crosshair';
+            showStatus('คลิกหมุด 🟢 เพื่อลบ (โหมดลบ)');
         }
-        if (freehandMode) toggleFreehand();
-        eraserMode = !eraserMode;
-        const btn = document.getElementById('btn-eraser-map');
-        btn.classList.toggle('active', eraserMode);
-        btn.textContent = eraserMode ? '🧹 ลบหมุด (กำลังใช้ — คลิกหมุด)' : '🧹 โหมดลบหมุด AI';
-        map.getContainer().style.cursor = eraserMode ? 'crosshair' : '';
-        showStatus(eraserMode ? 'คลิกหมุด 🟢 เพื่อลบ (โหมดลบ)' : '');
 
         // Toggle click handlers on AI markers
         buildingMarkers.eachLayer(marker => {
@@ -478,9 +526,10 @@
 
                 const useRoadMap = (activeLayer === 'road');
                 const tileUrlTemplate = useRoadMap
-                    ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+                    ? 'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png'
                     : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
                 let loaded = 0;
+                let tileFails = 0;
 
                 const loadPromises = [];
                 for (let ty = minTY; ty <= maxTY; ty++) {
@@ -502,7 +551,7 @@
                                 fill.style.width = (areaProgressBase + areaProgressSpan * (0.05 + (loaded / totalTiles) * 0.2)) + '%';
                                 resolve(true);
                             };
-                            tileImg.onerror = () => { loaded++; resolve(false); };
+                            tileImg.onerror = () => { loaded++; tileFails++; resolve(false); };
                             tileImg.src = url;
                         }));
                     }
@@ -525,7 +574,19 @@
                 const cCtx = cropCanvas.getContext('2d');
                 cCtx.drawImage(stitchCanvas, -cropX, -cropY);
 
-                const imageData = cCtx.getImageData(0, 0, cropW, cropH);
+                if (tileFails === totalTiles) {
+                    showStatus(`⚠️ ${areaLabel}: โหลด tile ไม่ได้ — ลองซูมเข้า/ออก แล้วลองใหม่`);
+                    continue;
+                }
+
+                let imageData;
+                try {
+                    imageData = cCtx.getImageData(0, 0, cropW, cropH);
+                } catch (corsErr) {
+                    console.error('Canvas CORS error:', corsErr);
+                    showStatus('⚠️ ไม่สามารถอ่านข้อมูล tile ได้ (CORS) — กด Ctrl+Shift+R รีโหลดหน้าแล้วลองใหม่');
+                    continue;
+                }
 
                 // --- Step 4: Build area mask ---
                 // ALWAYS build areaMask for all shape types (circle, polygon, rectangle)
@@ -661,7 +722,7 @@
         // OSM building color is typically around #d9d0c9 (217,208,201)
         // Range: warm beige/brown tones that are NOT white (road) or green (park)
         const mask = new Uint8Array(total);
-        const tolBase = 20 + (sensitivity - 5) * 4; // sensitivity widens color range
+        const tolBase = 25 + (sensitivity - 5) * 5;
 
         for (let i = 0; i < total; i++) {
             if (areaMask && !areaMask[i]) continue;
@@ -671,50 +732,48 @@
             const lum = (r + g + b) / 3;
 
             // Skip very bright pixels (roads, background = white/near-white)
-            if (lum > 235) continue;
+            if (lum > 240) continue;
             // Skip very dark pixels (text, borders)
-            if (lum < 100) continue;
+            if (lum < 80) continue;
 
-            // Building color detection:
-            // Buildings are warm-toned: R > G > B, with low saturation
-            // Typical range: R:195-225, G:185-215, B:175-210
             const maxC = Math.max(r, g, b);
             const minC = Math.min(r, g, b);
             const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
 
-            // Must be low-saturation warm tone (not green, not blue, not vivid)
-            if (sat > 0.20) continue;
+            // Must be low-saturation (not green parks, blue water, vivid colors)
+            if (sat > 0.25) continue;
 
             // Must be in the beige/brown luminance range
-            if (lum < 160 - tolBase || lum > 230 + (sensitivity - 5) * 2) continue;
+            // OSM buildings: #d9d0c9 (lum≈209), #e0d8d0 (lum≈219), #c8bfb8 (lum≈194)
+            if (lum < 140 - tolBase || lum > 235) continue;
 
-            // Must be warm: R >= G >= B (brownish)
-            if (r < g - 3 || g < b - 3) continue;
+            // Must be warm-toned: R >= G >= B (brownish/beige)
+            if (r < g - 5 || g < b - 5) continue;
 
-            // The R-B difference should be small but positive (warm tint)
+            // The R-B difference should be positive (warm tint)
             const warmth = r - b;
-            if (warmth < 2 || warmth > 50) continue;
+            if (warmth < 1 || warmth > 60) continue;
 
             // Skip greenish tones (parks, grass)
-            if (g > r && g > b && g - Math.min(r, b) > 15) continue;
+            if (g > r + 3 && g > b + 3 && g - Math.min(r, b) > 12) continue;
 
-            // Skip pure gray (roads sometimes render as light gray)
-            if (maxC - minC < 3 && lum > 200) continue;
+            // Skip pure gray (roads render as very neutral gray)
+            if (maxC - minC < 3 && lum > 195) continue;
 
             mask[i] = 1;
         }
 
         onProgress(25, 'ค้นหากลุ่มอาคาร...');
 
-        // Step 2: Light erosion to remove noise
+        // Step 2: Light erosion — keep pixel if at least 3 of 4 neighbors are also building
         let cleaned = mask;
         const eroded = new Uint8Array(total);
         for (let y = 1; y < h - 1; y++) {
             for (let x = 1; x < w - 1; x++) {
                 const i = y * w + x;
-                if (cleaned[i] && cleaned[i-1] && cleaned[i+1] && cleaned[i-w] && cleaned[i+w]) {
-                    eroded[i] = 1;
-                }
+                if (!cleaned[i]) continue;
+                const neighbors = cleaned[i-1] + cleaned[i+1] + cleaned[i-w] + cleaned[i+w];
+                if (neighbors >= 3) eroded[i] = 1;
             }
         }
         cleaned = eroded;
@@ -776,8 +835,8 @@
 
         // Step 5: Filter by size and shape
         // Buildings on road map are typically clean rectangles
-        const minBuildingArea = 30;   // quite small at high zoom
-        const maxBuildingArea = 50000;
+        const minBuildingArea = 15;
+        const maxBuildingArea = 80000;
         const results = [];
 
         for (let id = 1; id <= labelCount; id++) {
