@@ -154,7 +154,6 @@
                 btn.classList.add('active');
                 btn.textContent = '📌 ปักหมุด (กำลังใช้ — คลิกแผนที่)';
                 map.getContainer().style.cursor = 'crosshair';
-                document.getElementById('btn-undo-map').style.display = 'block';
                 showStatus('คลิกหลังคา = เพิ่มหมุด (🟡) | คลิกหมุดเดิม = ลบ');
             }
         });
@@ -176,10 +175,19 @@
         });
 
         document.getElementById('btn-undo-map').addEventListener('click', () => {
-            if (manualPins.length === 0) return;
-            const last = manualPins.pop();
-            map.removeLayer(last.marker);
-            updateCounter(); updateResults();
+            // Try undo manual pin first, then AI marker
+            if (manualPins.length > 0) {
+                const last = manualPins.pop();
+                map.removeLayer(last.marker);
+            } else if (detectedCount > 0) {
+                // Remove last AI marker
+                const layers = buildingMarkers.getLayers();
+                if (layers.length > 0) {
+                    buildingMarkers.removeLayer(layers[layers.length - 1]);
+                    detectedCount = Math.max(0, detectedCount - 1);
+                }
+            }
+            updateCounter(); updateResults(); updateUndoMap();
         });
 
         document.getElementById('btn-clear-map').addEventListener('click', () => {
@@ -220,6 +228,11 @@
         }
     }
 
+    function updateUndoMap() {
+        const hasAny = manualPins.length > 0 || detectedCount > 0;
+        document.getElementById('btn-undo-map').style.display = hasAny ? 'block' : 'none';
+    }
+
     // ========================
     //  Freehand Drawing
     // ========================
@@ -254,7 +267,6 @@
             const mbtn = document.getElementById('btn-manual');
             mbtn.classList.remove('active');
             mbtn.textContent = '📌 เปิดโหมดปักหมุด';
-            document.getElementById('btn-undo-map').style.display = 'none';
         }
         if (eraserMode) {
             eraserMode = false;
@@ -989,6 +1001,7 @@
         } else {
             el.style.display = 'none';
         }
+        updateUndoMap();
     }
 
     function updateResults() {

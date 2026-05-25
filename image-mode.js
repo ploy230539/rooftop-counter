@@ -131,7 +131,8 @@
         document.getElementById('btn-draw-rect').classList.toggle('active', mode === 'draw-rect');
         document.getElementById('btn-draw-freehand').classList.toggle('active', mode === 'draw-freehand');
         document.getElementById('btn-draw-freehand').textContent = mode === 'draw-freehand' ? '✏️ กำลังวาด... (ลากเมาส์แล้วปล่อย)' : '✏️ วาดอิสระ (Free Hand)';
-        document.getElementById('btn-undo').style.display = (mode === 'edit' || mode === 'eraser') ? 'block' : 'none';
+        // Undo button always visible when there are markers
+        document.getElementById('btn-undo').style.display = markers.length > 0 ? 'block' : 'none';
 
         // Cursor
         const wrap = document.getElementById('canvas-wrap');
@@ -521,15 +522,6 @@
             const isAuto = m.auto;
 
             ctx.save();
-            // Bounding box for auto-detected
-            if (isAuto && m.bbox && scale > 0.4) {
-                const tl = i2c(m.bbox.x, m.bbox.y);
-                ctx.strokeStyle = 'rgba(16,185,129,0.5)'; ctx.lineWidth = 1;
-                ctx.setLineDash([3, 2]);
-                ctx.strokeRect(tl.x, tl.y, m.bbox.w * scale, m.bbox.h * scale);
-                ctx.setLineDash([]);
-            }
-
             // Dot
             ctx.beginPath(); ctx.arc(cp.x, cp.y, r, 0, Math.PI * 2);
             ctx.fillStyle = isAuto ? '#10b981' : '#f59e0b';
@@ -552,6 +544,9 @@
         const auto = markers.filter(m => m.auto).length;
         const manual = total - auto;
         const avgP = parseFloat(document.getElementById('avg-people').value) || 3.5;
+
+        // Undo button visibility
+        document.getElementById('btn-undo').style.display = total > 0 ? 'block' : 'none';
 
         document.getElementById('canvas-counter').textContent =
             `หลังคา: ${total}` + (manual > 0 && auto > 0 ? ` (อัตโนมัติ ${auto} + มือ ${manual})` : manual > 0 ? ` (มือ ${manual})` : '');
