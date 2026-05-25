@@ -208,6 +208,15 @@
                     detectedCount = Math.max(0, detectedCount - 1);
                     toRemove--;
                 }
+                // Reset _detected flag on all areas so they can be re-detected
+                drawnItems.getLayers().forEach(a => {
+                    a._detected = false;
+                    if (a.setStyle) a.setStyle({ color: '#f59e0b', fillColor: '#f59e0b' });
+                });
+                // Re-enable detect button
+                const btn = document.getElementById('btn-count');
+                btn.disabled = drawnItems.getLayers().length === 0;
+                btn.textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
             }
             updateCounter(); updateResults(); updateUndoMap();
         });
