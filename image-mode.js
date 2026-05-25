@@ -378,6 +378,8 @@
             }
         }
 
+        let newCount = 0;
+
         await new Promise(resolve => {
             setTimeout(() => {
                 // Detect gray rectangular building blocks
@@ -386,12 +388,17 @@
                     (pct, msg) => { fill.style.width = pct + '%'; text.textContent = msg; }
                 );
 
-                // Keep manual markers, replace auto
-                const manual = markers.filter(m => !m.auto);
-                markers = manual.concat(results.map(r => ({
-                    x: r.x, y: r.y, auto: true,
-                    area: r.area, bbox: r.bbox
-                })));
+                // Append new results — skip duplicates near existing markers
+                const dupDist = 8; // pixels — if new marker is within this of existing, skip
+                for (const r of results) {
+                    const isDup = markers.some(m =>
+                        Math.abs(m.x - r.x) < dupDist && Math.abs(m.y - r.y) < dupDist
+                    );
+                    if (!isDup) {
+                        markers.push({ x: r.x, y: r.y, auto: true, area: r.area, bbox: r.bbox });
+                        newCount++;
+                    }
+                }
                 resolve();
             }, 50);
         });
@@ -402,7 +409,7 @@
 
         const autoCount = markers.filter(m => m.auto).length;
         updateUI(); render();
-        setHint(`พบ ${autoCount} หลังคา` + (area ? ' (ในวงที่กำหนด)' : '') + ' — ปักหมุดเพิ่มได้ถ้าตกหล่น');
+        setHint(`พบใหม่ ${newCount} หลัง (รวม ${autoCount} หลัง)` + (area ? ' ในวงที่กำหนด' : '') + ' — วาดพื้นที่ใหม่แล้วกดตรวจจับเพิ่มได้');
     }
 
     function undoMarker() {
