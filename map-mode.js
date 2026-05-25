@@ -10,6 +10,7 @@
     let searchPin = null;      // Red pin from URL/search
     let radiusCircle = null;   // Radius circle around search pin
     let freehandMode = false;
+    let activeLayer = 'road';  // 'road' or 'satellite'
     let freehandPoints = [];
     let freehandPolyline = null;
 
@@ -34,6 +35,11 @@
 
         // Default to road map
         roadMap.addTo(map);
+
+        // Track active layer
+        map.on('baselayerchange', e => {
+            activeLayer = e.name.includes('ดาวเทียม') ? 'satellite' : 'road';
+        });
 
         // Layer switcher control
         L.control.layers({
@@ -470,7 +476,10 @@
                 stitchCanvas.height = tilesH * tileSize;
                 const sCtx = stitchCanvas.getContext('2d');
 
-                const tileUrlTemplate = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+                const useRoadMap = (activeLayer === 'road');
+                const tileUrlTemplate = useRoadMap
+                    ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+                    : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
                 let loaded = 0;
 
                 const loadPromises = [];
@@ -560,23 +569,34 @@
                     areaMask.fill(1);
                 }
 
-                // --- Step 5: Run AI detector ---
+                // --- Step 5: Run detector ---
                 pText.textContent = `${areaLabel}: กำลังตรวจจับหลังคา...`;
                 fill.style.width = (areaProgressBase + areaProgressSpan * 0.30) + '%';
 
                 await new Promise(resolve => setTimeout(resolve, 50));
 
                 const sensitivity = parseInt(document.getElementById('map-sensitivity').value) || 5;
-                const minArea = getAutoMinArea(zoom);
-                const maxArea = getAutoMaxArea(zoom);
+                let results;
 
-                const results = RooftopDetector.detect(imageData, cropW, cropH, {
-                    sensitivity, minArea, maxArea, areaMask
-                }, (pct, msg) => {
-                    const overall = areaProgressBase + areaProgressSpan * (0.30 + pct * 0.0065);
-                    fill.style.width = Math.min(overall, areaProgressBase + areaProgressSpan * 0.95) + '%';
-                    pText.textContent = `${areaLabel}: ${msg}`;
-                });
+                if (useRoadMap) {
+                    // Road map mode: detect brown/beige building blocks from OSM tiles
+                    results = detectBuildingBlocks(imageData, cropW, cropH, areaMask, sensitivity, (pct, msg) => {
+                        const overall = areaProgressBase + areaProgressSpan * (0.30 + pct * 0.0065);
+                        fill.style.width = Math.min(overall, areaProgressBase + areaProgressSpan * 0.95) + '%';
+                        pText.textContent = `${areaLabel}: ${msg}`;
+                    });
+                } else {
+                    // Satellite mode: use full AI rooftop detector
+                    const minArea = getAutoMinArea(zoom);
+                    const maxArea = getAutoMaxArea(zoom);
+                    results = RooftopDetector.detect(imageData, cropW, cropH, {
+                        sensitivity, minArea, maxArea, areaMask
+                    }, (pct, msg) => {
+                        const overall = areaProgressBase + areaProgressSpan * (0.30 + pct * 0.0065);
+                        fill.style.width = Math.min(overall, areaProgressBase + areaProgressSpan * 0.95) + '%';
+                        pText.textContent = `${areaLabel}: ${msg}`;
+                    });
+                }
 
                 // --- Step 6: Convert pixel coords → lat/lng → map markers ---
                 // STRICT: only accept results whose centroid pixel is INSIDE areaMask
@@ -624,6 +644,168 @@
         }
 
         resetDetectBtn();
+    }
+
+    // ========================
+    //  Building Block Detector (for OSM road map tiles)
+    //  Buildings on OSM appear as brown/beige filled rectangles
+    //  Much simpler than satellite detection
+    // ========================
+    function detectBuildingBlocks(imageData, w, h, areaMask, sensitivity, onProgress) {
+        const pixels = imageData.data;
+        const total = w * h;
+
+        onProgress(5, 'วิเคราะห์บล็อกอาคาร...');
+
+        // Step 1: Identify building-colored pixels
+        // OSM building color is typically around #d9d0c9 (217,208,201)
+        // Range: warm beige/brown tones that are NOT white (road) or green (park)
+        const mask = new Uint8Array(total);
+        const tolBase = 20 + (sensitivity - 5) * 4; // sensitivity widens color range
+
+        for (let i = 0; i < total; i++) {
+            if (areaMask && !areaMask[i]) continue;
+
+            const idx = i * 4;
+            const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+            const lum = (r + g + b) / 3;
+
+            // Skip very bright pixels (roads, background = white/near-white)
+            if (lum > 235) continue;
+            // Skip very dark pixels (text, borders)
+            if (lum < 100) continue;
+
+            // Building color detection:
+            // Buildings are warm-toned: R > G > B, with low saturation
+            // Typical range: R:195-225, G:185-215, B:175-210
+            const maxC = Math.max(r, g, b);
+            const minC = Math.min(r, g, b);
+            const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+
+            // Must be low-saturation warm tone (not green, not blue, not vivid)
+            if (sat > 0.20) continue;
+
+            // Must be in the beige/brown luminance range
+            if (lum < 160 - tolBase || lum > 230 + (sensitivity - 5) * 2) continue;
+
+            // Must be warm: R >= G >= B (brownish)
+            if (r < g - 3 || g < b - 3) continue;
+
+            // The R-B difference should be small but positive (warm tint)
+            const warmth = r - b;
+            if (warmth < 2 || warmth > 50) continue;
+
+            // Skip greenish tones (parks, grass)
+            if (g > r && g > b && g - Math.min(r, b) > 15) continue;
+
+            // Skip pure gray (roads sometimes render as light gray)
+            if (maxC - minC < 3 && lum > 200) continue;
+
+            mask[i] = 1;
+        }
+
+        onProgress(25, 'ค้นหากลุ่มอาคาร...');
+
+        // Step 2: Light erosion to remove noise
+        let cleaned = mask;
+        const eroded = new Uint8Array(total);
+        for (let y = 1; y < h - 1; y++) {
+            for (let x = 1; x < w - 1; x++) {
+                const i = y * w + x;
+                if (cleaned[i] && cleaned[i-1] && cleaned[i+1] && cleaned[i-w] && cleaned[i+w]) {
+                    eroded[i] = 1;
+                }
+            }
+        }
+        cleaned = eroded;
+
+        onProgress(40, 'จัดกลุ่มอาคาร...');
+
+        // Step 3: Connected component labeling (BFS)
+        const labels = new Int32Array(total);
+        let labelCount = 0;
+
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const i = y * w + x;
+                if (cleaned[i] && !labels[i]) {
+                    labelCount++;
+                    const queue = [i];
+                    labels[i] = labelCount;
+                    let head = 0;
+                    while (head < queue.length) {
+                        const ci = queue[head++];
+                        const cx = ci % w, cy = (ci - cx) / w;
+                        const neighbors = [
+                            cy > 0 ? ci - w : -1,
+                            cy < h - 1 ? ci + w : -1,
+                            cx > 0 ? ci - 1 : -1,
+                            cx < w - 1 ? ci + 1 : -1,
+                        ];
+                        for (const ni of neighbors) {
+                            if (ni >= 0 && cleaned[ni] && !labels[ni]) {
+                                labels[ni] = labelCount;
+                                queue.push(ni);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        onProgress(65, `พบ ${labelCount} กลุ่ม — กรองขนาด...`);
+
+        // Step 4: Collect component info
+        const compInfo = [];
+        for (let id = 0; id <= labelCount; id++) {
+            compInfo[id] = { area: 0, sumX: 0, sumY: 0, minX: Infinity, minY: Infinity, maxX: 0, maxY: 0 };
+        }
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const id = labels[y * w + x];
+                if (!id) continue;
+                const c = compInfo[id];
+                c.area++;
+                c.sumX += x; c.sumY += y;
+                if (x < c.minX) c.minX = x;
+                if (x > c.maxX) c.maxX = x;
+                if (y < c.minY) c.minY = y;
+                if (y > c.maxY) c.maxY = y;
+            }
+        }
+
+        // Step 5: Filter by size and shape
+        // Buildings on road map are typically clean rectangles
+        const minBuildingArea = 30;   // quite small at high zoom
+        const maxBuildingArea = 50000;
+        const results = [];
+
+        for (let id = 1; id <= labelCount; id++) {
+            const c = compInfo[id];
+            if (c.area < minBuildingArea || c.area > maxBuildingArea) continue;
+
+            const bw = c.maxX - c.minX + 1;
+            const bh = c.maxY - c.minY + 1;
+            const rect = c.area / (bw * bh);
+
+            // Buildings should be somewhat rectangular (fill > 40% of bbox)
+            if (rect < 0.4) continue;
+
+            // Not too elongated
+            const aspect = Math.max(bw, bh) / Math.min(bw, bh);
+            if (aspect > 8) continue;
+
+            results.push({
+                x: Math.round(c.sumX / c.area),
+                y: Math.round(c.sumY / c.area),
+                area: c.area,
+                bbox: { x: c.minX, y: c.minY, w: bw, h: bh }
+            });
+        }
+
+        onProgress(95, `พบ ${results.length} อาคาร`);
+        onProgress(100, 'เสร็จสิ้น!');
+        return results;
     }
 
     // Ray casting point-in-polygon test
