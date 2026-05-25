@@ -5,18 +5,22 @@
     let panX = 0, panY = 0, scale = 1;
     let isPanning = false, panStart = { x: 0, y: 0 }, panStartOff = { x: 0, y: 0 };
 
-    // Tool modes: null | 'edit' | 'eraser' | 'draw-circle' | 'draw-rect' | 'draw-freehand'
+    // Tool modes: null | 'edit' | 'eraser' | 'erase-area' | 'draw-circle' | 'draw-rect' | 'draw-freehand'
     let toolMode = null;
 
     // Markers: { x, y, auto:bool }
     let markers = [];
     let detecting = false;
 
-    // Area constraint (image coords)
-    // { type:'circle', cx, cy, r } or { type:'rect', x1, y1, x2, y2 } or { type:'polygon', points }
-    let area = null;
-    let drawStart = null;  // canvas coords
+    // Multiple areas (image coords)
+    // Each: { type:'circle', cx, cy, r } | { type:'rect', x1, y1, x2, y2 } | { type:'polygon', points }
+    let areas = [];
+    let drawStart = null;
     let drawCurrent = null;
+
+    // Undo stack: tracks action order
+    // { type:'area' } | { type:'marker' } | { type:'detection', count:N }
+    let undoStack = [];
 
     // Freehand drawing state
     let freehandPoints = [];
@@ -53,14 +57,22 @@
         document.getElementById('btn-detect').addEventListener('click', runDetection);
         document.getElementById('btn-edit').addEventListener('click', () => setTool(toolMode === 'edit' ? null : 'edit'));
         document.getElementById('btn-eraser').addEventListener('click', () => setTool(toolMode === 'eraser' ? null : 'eraser'));
+        document.getElementById('btn-erase-area').addEventListener('click', () => setTool(toolMode === 'erase-area' ? null : 'erase-area'));
         document.getElementById('btn-draw-circle').addEventListener('click', () => setTool(toolMode === 'draw-circle' ? null : 'draw-circle'));
         document.getElementById('btn-draw-rect').addEventListener('click', () => setTool(toolMode === 'draw-rect' ? null : 'draw-rect'));
         document.getElementById('btn-draw-freehand').addEventListener('click', () => setTool(toolMode === 'draw-freehand' ? null : 'draw-freehand'));
         document.getElementById('btn-clear-area').addEventListener('click', clearArea);
 
-        document.getElementById('btn-undo').addEventListener('click', undoMarker);
-        document.getElementById('btn-clear-ai').addEventListener('click', () => { markers = markers.filter(m => !m.auto); updateUI(); render(); });
-        document.getElementById('btn-clear-markers').addEventListener('click', () => { markers = []; updateUI(); render(); });
+        document.getElementById('btn-undo').addEventListener('click', undo);
+        document.getElementById('btn-clear-ai').addEventListener('click', () => {
+            markers = markers.filter(m => !m.auto);
+            undoStack = undoStack.filter(u => u.type === 'area' || u.type === 'marker');
+            updateUI(); render();
+        });
+        document.getElementById('btn-clear-markers').addEventListener('click', () => {
+            markers = []; areas = []; undoStack = [];
+            updateUI(); updateAreaInfo(); render();
+        });
         document.getElementById('btn-export').addEventListener('click', showReport);
         document.getElementById('modal-close').addEventListener('click', () => document.getElementById('report-modal').style.display = 'none');
         document.getElementById('btn-print').addEventListener('click', () => window.print());
@@ -83,7 +95,7 @@
     function loadImageUrl(url) {
         const image = new Image();
         image.onload = () => {
-            img = image; markers = []; area = null;
+            img = image; markers = []; areas = []; undoStack = [];
             setTool(null);
             document.getElementById('img-drop-zone').style.display = 'none';
             document.getElementById('canvas-wrap').style.display = 'block';
@@ -127,12 +139,15 @@
         document.getElementById('btn-edit').textContent = mode === 'edit' ? '📌 ปักหมุด (กำลังใช้ — คลิกรูป)' : '📌 เปิดโหมดปักหมุดเอง';
         document.getElementById('btn-eraser').classList.toggle('active', mode === 'eraser');
         document.getElementById('btn-eraser').textContent = mode === 'eraser' ? '🧹 ลบหมุด (กำลังใช้ — คลิกหมุด)' : '🧹 โหมดลบหมุด AI';
+        document.getElementById('btn-erase-area').classList.toggle('active', mode === 'erase-area');
+        document.getElementById('btn-erase-area').textContent = mode === 'erase-area' ? '🧹 คลิกวงที่ต้องการลบ...' : '🧹 ยางลบวงพื้นที่';
         document.getElementById('btn-draw-circle').classList.toggle('active', mode === 'draw-circle');
         document.getElementById('btn-draw-rect').classList.toggle('active', mode === 'draw-rect');
         document.getElementById('btn-draw-freehand').classList.toggle('active', mode === 'draw-freehand');
         document.getElementById('btn-draw-freehand').textContent = mode === 'draw-freehand' ? '✏️ กำลังวาด... (ลากเมาส์แล้วปล่อย)' : '✏️ วาดอิสระ (Free Hand)';
-        // Undo button always visible when there are markers
-        document.getElementById('btn-undo').style.display = markers.length > 0 ? 'block' : 'none';
+
+        // Undo button visible when anything can be undone
+        document.getElementById('btn-undo').style.display = undoStack.length > 0 ? 'block' : 'none';
 
         // Cursor
         const wrap = document.getElementById('canvas-wrap');
@@ -142,6 +157,7 @@
         const hints = {
             'edit': 'คลิกหลังคา = เพิ่มหมุด (🟡) | คลิกหมุดเดิม = ลบ',
             'eraser': 'คลิกหมุด 🟢 หรือ 🟡 เพื่อลบ (ไม่เพิ่มหมุดใหม่)',
+            'erase-area': 'คลิกในวงพื้นที่ที่ต้องการลบ',
             'draw-circle': 'คลิกค้างแล้วลาก เพื่อวาดวงกลม',
             'draw-rect': 'คลิกค้างแล้วลาก เพื่อวาดสี่เหลี่ยม',
             'draw-freehand': 'กดเมาส์ค้าง แล้วลากวาดพื้นที่ → ปล่อยเพื่อปิดรูป',
@@ -154,7 +170,26 @@
         if (!img) return;
         const pos = evtPos(e);
 
-        // Eraser mode — only delete, never add
+        // Erase-area mode — click inside an area to remove it
+        if (toolMode === 'erase-area') {
+            const ip = c2i(pos.x, pos.y);
+            for (let i = areas.length - 1; i >= 0; i--) {
+                if (pointInSingleArea(ip.x, ip.y, areas[i])) {
+                    areas.splice(i, 1);
+                    // Remove matching entry from undoStack
+                    for (let j = undoStack.length - 1; j >= 0; j--) {
+                        if (undoStack[j].type === 'area') { undoStack.splice(j, 1); break; }
+                    }
+                    updateAreaInfo(); updateUI(); render();
+                    if (areas.length === 0) setHint('ลบวงพื้นที่ทั้งหมดแล้ว');
+                    return;
+                }
+            }
+            setHint('ไม่พบวงพื้นที่ตรงจุดที่คลิก');
+            return;
+        }
+
+        // Eraser mode — only delete markers
         if (toolMode === 'eraser') {
             const ip = c2i(pos.x, pos.y);
             const hitR = Math.max(MARKER_R, MARKER_R / scale) * 2.5;
@@ -177,6 +212,7 @@
             }
             if (ip.x >= 0 && ip.y >= 0 && ip.x <= img.width && ip.y <= img.height) {
                 markers.push({ x: ip.x, y: ip.y, auto: false });
+                undoStack.push({ type: 'marker' });
                 updateUI(); render();
             }
             return;
@@ -275,23 +311,26 @@
         if (toolMode === 'draw-circle') {
             const r = Math.hypot(e2.x - s.x, e2.y - s.y);
             if (r < 5) return;
-            area = { type: 'circle', cx: s.x, cy: s.y, r };
+            areas.push({ type: 'circle', cx: s.x, cy: s.y, r });
         } else if (toolMode === 'draw-rect') {
             const x1 = Math.min(s.x, e2.x), y1 = Math.min(s.y, e2.y);
             const x2 = Math.max(s.x, e2.x), y2 = Math.max(s.y, e2.y);
             if (Math.abs(x2 - x1) < 5 || Math.abs(y2 - y1) < 5) return;
-            area = { type: 'rect', x1, y1, x2, y2 };
+            areas.push({ type: 'rect', x1, y1, x2, y2 });
         }
 
-        updateAreaInfo();
+        undoStack.push({ type: 'area' });
+        updateAreaInfo(); updateUI();
         render();
         setTool(null);
-        setHint('กำหนดพื้นที่แล้ว — กด "ตรวจจับหลังคาอัตโนมัติ" เพื่อเริ่ม');
+        setHint(`วาดแล้ว ${areas.length} พื้นที่ — วาดเพิ่มหรือกด "ตรวจจับอัตโนมัติ"`);
     }
 
     function clearArea() {
-        area = null; updateAreaInfo(); render();
-        setHint('ล้างวงพื้นที่แล้ว — ตรวจจับจะครอบคลุมทั้งรูป');
+        areas = [];
+        undoStack = undoStack.filter(u => u.type !== 'area');
+        updateAreaInfo(); updateUI(); render();
+        setHint('ล้างวงพื้นที่ทั้งหมดแล้ว — ตรวจจับจะครอบคลุมทั้งรูป');
     }
 
     function finalizeFreehand() {
@@ -310,12 +349,13 @@
         }
         simplified.push(simplified[0]); // close
 
-        area = { type: 'polygon', points: simplified };
+        areas.push({ type: 'polygon', points: simplified });
+        undoStack.push({ type: 'area' });
         freehandPoints = [];
-        updateAreaInfo();
+        updateAreaInfo(); updateUI();
         render();
         setTool(null);
-        setHint('กำหนดพื้นที่แล้ว — กด "ตรวจจับหลังคาอัตโนมัติ" เพื่อเริ่ม');
+        setHint(`วาดแล้ว ${areas.length} พื้นที่ — วาดเพิ่มหรือกด "ตรวจจับอัตโนมัติ"`);
     }
 
     function pointInPolygonImg(x, y, polygon) {
@@ -330,24 +370,43 @@
         return inside;
     }
 
+    // Check if point is inside a single area
+    function pointInSingleArea(ix, iy, a) {
+        if (a.type === 'circle') return Math.hypot(ix - a.cx, iy - a.cy) <= a.r;
+        if (a.type === 'rect') return ix >= a.x1 && ix <= a.x2 && iy >= a.y1 && iy <= a.y2;
+        if (a.type === 'polygon') return pointInPolygonImg(ix, iy, a.points);
+        return false;
+    }
+
+    // Check if point is inside ANY area (or true if no areas)
     function isInArea(ix, iy) {
-        if (!area) return true;
-        if (area.type === 'circle') return Math.hypot(ix - area.cx, iy - area.cy) <= area.r;
-        if (area.type === 'rect') return ix >= area.x1 && ix <= area.x2 && iy >= area.y1 && iy <= area.y2;
-        if (area.type === 'polygon') return pointInPolygonImg(ix, iy, area.points);
-        return true;
+        if (areas.length === 0) return true;
+        return areas.some(a => pointInSingleArea(ix, iy, a));
     }
 
     function updateAreaInfo() {
         const el = document.getElementById('area-info');
-        if (!area) { el.textContent = ''; return; }
-        if (area.type === 'circle') {
-            el.innerHTML = `⭕ วงกลม — รัศมี ${Math.round(area.r)} px`;
-        } else if (area.type === 'rect') {
-            el.innerHTML = `⬜ สี่เหลี่ยม — ${Math.round(area.x2 - area.x1)} × ${Math.round(area.y2 - area.y1)} px`;
-        } else if (area.type === 'polygon') {
-            el.innerHTML = `✏️ วาดอิสระ — ${area.points.length} จุด`;
+        if (areas.length === 0) { el.textContent = ''; return; }
+        el.innerHTML = `วาดแล้ว ${areas.length} พื้นที่`;
+    }
+
+    // --- Undo ---
+    function undo() {
+        if (undoStack.length === 0) return;
+        const last = undoStack.pop();
+        if (last.type === 'area') {
+            if (areas.length > 0) areas.pop();
+            updateAreaInfo();
+        } else if (last.type === 'marker') {
+            if (markers.length > 0) markers.pop();
+        } else if (last.type === 'detection') {
+            // Remove the last N auto markers
+            let toRemove = last.count;
+            for (let i = markers.length - 1; i >= 0 && toRemove > 0; i--) {
+                if (markers[i].auto) { markers.splice(i, 1); toRemove--; }
+            }
         }
+        updateUI(); render();
     }
 
     // --- Detection ---
@@ -370,7 +429,7 @@
 
         // Build area mask for detector (null = whole image)
         let areaMask = null;
-        if (area) {
+        if (areas.length > 0) {
             areaMask = new Uint8Array(img.width * img.height);
             for (let y = 0; y < img.height; y++) {
                 for (let x = 0; x < img.width; x++) {
@@ -390,7 +449,7 @@
                 );
 
                 // Append new results — skip duplicates near existing markers
-                const dupDist = 8; // pixels — if new marker is within this of existing, skip
+                const dupDist = 8;
                 for (const r of results) {
                     const isDup = markers.some(m =>
                         Math.abs(m.x - r.x) < dupDist && Math.abs(m.y - r.y) < dupDist
@@ -404,17 +463,16 @@
             }, 50);
         });
 
+        // Push detection as single undo-able action
+        if (newCount > 0) undoStack.push({ type: 'detection', count: newCount });
+
         btn.disabled = false; btn.textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
         setTimeout(() => { bar.style.display = 'none'; }, 1200);
         detecting = false;
 
         const autoCount = markers.filter(m => m.auto).length;
         updateUI(); render();
-        setHint(`พบใหม่ ${newCount} หลัง (รวม ${autoCount} หลัง)` + (area ? ' ในวงที่กำหนด' : '') + ' — วาดพื้นที่ใหม่แล้วกดตรวจจับเพิ่มได้');
-    }
-
-    function undoMarker() {
-        if (markers.length) { markers.pop(); updateUI(); render(); }
+        setHint(`พบใหม่ ${newCount} หลัง (รวม ${autoCount} หลัง)` + (areas.length > 0 ? ' ในวงที่กำหนด' : '') + ' — วาดพื้นที่ใหม่แล้วกดตรวจจับเพิ่มได้');
     }
 
     // --- Rendering ---
@@ -428,8 +486,8 @@
         ctx.save(); ctx.translate(panX, panY); ctx.scale(scale, scale);
         ctx.drawImage(img, 0, 0); ctx.restore();
 
-        // Dim area outside the drawn area
-        if (area) drawAreaOverlay();
+        // Dim outside drawn areas
+        if (areas.length > 0) drawAreaOverlay();
 
         // Area being drawn (preview)
         if (drawStart && drawCurrent && (toolMode === 'draw-circle' || toolMode === 'draw-rect')) drawAreaPreview();
@@ -440,45 +498,48 @@
     }
 
     function drawAreaOverlay() {
-        // Semi-transparent overlay outside the area
         ctx.save();
         ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
 
-        // Draw full image rect, then cut out the area
+        // Full image rect, cut out all areas
         ctx.beginPath();
         const tl = i2c(0, 0), br = i2c(img.width, img.height);
         ctx.rect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
 
-        if (area.type === 'circle') {
-            const center = i2c(area.cx, area.cy);
-            const rCanvas = area.r * scale;
-            ctx.moveTo(center.x + rCanvas, center.y);
-            ctx.arc(center.x, center.y, rCanvas, 0, Math.PI * 2, true);
-        } else if (area.type === 'rect') {
-            const p1 = i2c(area.x1, area.y1), p2 = i2c(area.x2, area.y2);
-            ctx.rect(p2.x, p1.y, p1.x - p2.x, p2.y - p1.y);
-        } else if (area.type === 'polygon' && area.points.length > 2) {
-            const pts = area.points.map(p => i2c(p.x, p.y));
-            ctx.moveTo(pts[pts.length-1].x, pts[pts.length-1].y);
-            for (const p of pts) ctx.lineTo(p.x, p.y);
-            ctx.closePath();
+        for (const a of areas) {
+            if (a.type === 'circle') {
+                const center = i2c(a.cx, a.cy);
+                const rCanvas = a.r * scale;
+                ctx.moveTo(center.x + rCanvas, center.y);
+                ctx.arc(center.x, center.y, rCanvas, 0, Math.PI * 2, true);
+            } else if (a.type === 'rect') {
+                const p1 = i2c(a.x1, a.y1), p2 = i2c(a.x2, a.y2);
+                ctx.rect(p2.x, p1.y, p1.x - p2.x, p2.y - p1.y);
+            } else if (a.type === 'polygon' && a.points.length > 2) {
+                const pts = a.points.map(p => i2c(p.x, p.y));
+                ctx.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+                for (const p of pts) ctx.lineTo(p.x, p.y);
+                ctx.closePath();
+            }
         }
         ctx.fill('evenodd');
 
-        // Border
+        // Borders for each area
         ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2.5; ctx.setLineDash([8, 4]);
-        if (area.type === 'circle') {
-            const center = i2c(area.cx, area.cy);
-            ctx.beginPath(); ctx.arc(center.x, center.y, area.r * scale, 0, Math.PI * 2); ctx.stroke();
-        } else if (area.type === 'rect') {
-            const p1 = i2c(area.x1, area.y1), p2 = i2c(area.x2, area.y2);
-            ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
-        } else if (area.type === 'polygon') {
-            const pts = area.points.map(p => i2c(p.x, p.y));
-            ctx.beginPath();
-            ctx.moveTo(pts[0].x, pts[0].y);
-            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-            ctx.closePath(); ctx.stroke();
+        for (const a of areas) {
+            if (a.type === 'circle') {
+                const center = i2c(a.cx, a.cy);
+                ctx.beginPath(); ctx.arc(center.x, center.y, a.r * scale, 0, Math.PI * 2); ctx.stroke();
+            } else if (a.type === 'rect') {
+                const p1 = i2c(a.x1, a.y1), p2 = i2c(a.x2, a.y2);
+                ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+            } else if (a.type === 'polygon') {
+                const pts = a.points.map(p => i2c(p.x, p.y));
+                ctx.beginPath();
+                ctx.moveTo(pts[0].x, pts[0].y);
+                for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+                ctx.closePath(); ctx.stroke();
+            }
         }
         ctx.restore();
     }
@@ -545,8 +606,8 @@
         const manual = total - auto;
         const avgP = parseFloat(document.getElementById('avg-people').value) || 3.5;
 
-        // Undo button visibility
-        document.getElementById('btn-undo').style.display = total > 0 ? 'block' : 'none';
+        // Undo button visible when anything can be undone
+        document.getElementById('btn-undo').style.display = undoStack.length > 0 ? 'block' : 'none';
 
         document.getElementById('canvas-counter').textContent =
             `หลังคา: ${total}` + (manual > 0 && auto > 0 ? ` (อัตโนมัติ ${auto} + มือ ${manual})` : manual > 0 ? ` (มือ ${manual})` : '');
@@ -570,7 +631,7 @@
     function showReport() {
         const total = markers.length, auto = markers.filter(m => m.auto).length, manual = total - auto;
         const avgP = document.getElementById('avg-people').value;
-        const areaText = area ? (area.type === 'circle' ? `วงกลม รัศมี ${Math.round(area.r)} px` : `สี่เหลี่ยม ${Math.round(area.x2-area.x1)}×${Math.round(area.y2-area.y1)} px`) : 'ทั้งรูป';
+        const areaText = areas.length > 0 ? `${areas.length} พื้นที่` : 'ทั้งรูป';
 
         document.getElementById('report-content').innerHTML = `
             <p><strong>วันที่:</strong> ${new Date().toLocaleString('th-TH')}</p>

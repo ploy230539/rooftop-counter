@@ -7,6 +7,7 @@
     let mapInitialized = false;
     let detecting = false;
     let eraserMode = false;
+    let eraseAreaMode = false;
     let searchPin = null;      // Red pin from URL/search
     let radiusCircle = null;   // Radius circle around search pin
     let freehandMode = false;
@@ -14,6 +15,9 @@
     let freehandPoints = [];
     let freehandPolyline = null;
     let drawControl = null;
+
+    // Undo stack: 'area' | 'pin' | { type:'detection', count:N }
+    let undoStackMap = [];
 
     function initMap() {
         if (mapInitialized) return;
@@ -79,10 +83,10 @@
         // Multiple areas: ADD new area, don't clear old ones
         map.on(L.Draw.Event.CREATED, e => {
             drawnItems.addLayer(e.layer);
-            // New undetected area → enable detect button
+            undoStackMap.push('area');
             document.getElementById('btn-count').disabled = false;
             document.getElementById('btn-count').textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
-            updateAreaCount();
+            updateAreaCount(); updateUndoMap();
         });
 
         // When areas are deleted via the edit control
@@ -138,6 +142,7 @@
             });
 
             manualPins.push({ marker, latlng: e.latlng });
+            undoStackMap.push('pin');
             updateCounter(); updateResults();
         });
 
@@ -163,6 +168,8 @@
         document.getElementById('btn-clear-ai-map').addEventListener('click', () => {
             buildingMarkers.clearLayers();
             detectedCount = 0;
+            // Remove detection entries from undo stack
+            undoStackMap = undoStackMap.filter(u => u !== 'pin' || true).filter(u => typeof u === 'string');
             // Reset all areas so they can be re-detected
             drawnItems.getLayers().forEach(a => {
                 a._detected = false;
@@ -170,31 +177,79 @@
             });
             document.getElementById('btn-count').disabled = drawnItems.getLayers().length === 0;
             document.getElementById('btn-count').textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
-            updateCounter(); updateResults();
+            updateCounter(); updateResults(); updateUndoMap();
             showStatus('ลบหมุด AI ทั้งหมดแล้ว — กดตรวจจับใหม่ได้');
         });
 
         document.getElementById('btn-undo-map').addEventListener('click', () => {
-            // Try undo manual pin first, then AI marker
-            if (manualPins.length > 0) {
-                const last = manualPins.pop();
-                map.removeLayer(last.marker);
-            } else if (detectedCount > 0) {
-                // Remove last AI marker
-                const layers = buildingMarkers.getLayers();
+            if (undoStackMap.length === 0) return;
+            const last = undoStackMap.pop();
+            if (last === 'area') {
+                // Remove last drawn area
+                const layers = drawnItems.getLayers();
                 if (layers.length > 0) {
-                    buildingMarkers.removeLayer(layers[layers.length - 1]);
+                    drawnItems.removeLayer(layers[layers.length - 1]);
+                    updateAreaCount();
+                    if (drawnItems.getLayers().length === 0) {
+                        document.getElementById('btn-count').disabled = true;
+                    }
+                }
+            } else if (last === 'pin') {
+                if (manualPins.length > 0) {
+                    const p = manualPins.pop();
+                    map.removeLayer(p.marker);
+                }
+            } else if (typeof last === 'object' && last.type === 'detection') {
+                // Remove last N AI markers
+                const layers = buildingMarkers.getLayers();
+                let toRemove = last.count;
+                for (let i = layers.length - 1; i >= 0 && toRemove > 0; i--) {
+                    buildingMarkers.removeLayer(layers[i]);
                     detectedCount = Math.max(0, detectedCount - 1);
+                    toRemove--;
                 }
             }
             updateCounter(); updateResults(); updateUndoMap();
+        });
+
+        // Erase area mode
+        document.getElementById('btn-erase-area-map').addEventListener('click', () => {
+            const wasEraseArea = eraseAreaMode;
+            deactivateAllModes();
+            cancelLeafletDraw();
+            if (!wasEraseArea) {
+                eraseAreaMode = true;
+                const btn = document.getElementById('btn-erase-area-map');
+                btn.classList.add('active');
+                btn.textContent = '🧹 คลิกวงที่ต้องการลบ...';
+                map.getContainer().style.cursor = 'crosshair';
+                showStatus('คลิกบนวงพื้นที่ที่ต้องการลบ');
+
+                // Add click handler on each drawn area
+                drawnItems.eachLayer(layer => {
+                    layer._eraseAreaHandler = function () {
+                        drawnItems.removeLayer(layer);
+                        // Remove one 'area' from undo stack
+                        for (let i = undoStackMap.length - 1; i >= 0; i--) {
+                            if (undoStackMap[i] === 'area') { undoStackMap.splice(i, 1); break; }
+                        }
+                        updateAreaCount(); updateUndoMap();
+                        if (drawnItems.getLayers().length === 0) {
+                            document.getElementById('btn-count').disabled = true;
+                        }
+                        showStatus('ลบวงพื้นที่แล้ว');
+                    };
+                    layer.on('click', layer._eraseAreaHandler);
+                    if (layer._path) layer._path.style.cursor = 'pointer';
+                });
+            }
         });
 
         document.getElementById('btn-clear-map').addEventListener('click', () => {
             drawnItems.clearLayers(); buildingMarkers.clearLayers();
             manualPins.forEach(p => map.removeLayer(p.marker));
             manualPins = [];
-            detectedCount = 0; eraserMode = false;
+            detectedCount = 0; eraserMode = false; undoStackMap = [];
             // Remove radius circle regardless of lock
             if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
             // Reset radius UI
@@ -229,8 +284,7 @@
     }
 
     function updateUndoMap() {
-        const hasAny = manualPins.length > 0 || detectedCount > 0;
-        document.getElementById('btn-undo-map').style.display = hasAny ? 'block' : 'none';
+        document.getElementById('btn-undo-map').style.display = undoStackMap.length > 0 ? 'block' : 'none';
     }
 
     // ========================
@@ -250,6 +304,19 @@
     }
 
     function deactivateAllModes() {
+        if (eraseAreaMode) {
+            eraseAreaMode = false;
+            const eabtn = document.getElementById('btn-erase-area-map');
+            eabtn.classList.remove('active');
+            eabtn.textContent = '🧹 ยางลบวง';
+            drawnItems.eachLayer(layer => {
+                if (layer._eraseAreaHandler) {
+                    layer.off('click', layer._eraseAreaHandler);
+                    delete layer._eraseAreaHandler;
+                }
+                if (layer._path) layer._path.style.cursor = '';
+            });
+        }
         if (freehandMode) {
             freehandMode = false;
             const fbtn = document.getElementById('btn-freehand');
@@ -342,9 +409,10 @@
         });
 
         drawnItems.addLayer(polygon);
+        undoStackMap.push('area');
         document.getElementById('btn-count').disabled = false;
         document.getElementById('btn-count').textContent = '🤖 ตรวจจับหลังคาอัตโนมัติ';
-        updateAreaCount();
+        updateAreaCount(); updateUndoMap();
         showStatus('เพิ่มพื้นที่วาดอิสระแล้ว — วาดเพิ่มหรือกดตรวจจับ');
         freehandPoints = [];
     }
@@ -705,10 +773,16 @@
             }
 
             fill.style.width = '100%';
-            pText.textContent = `เสร็จสิ้น! พบเพิ่ม ${newDetected || detectedCount} หลังคา (รวม ${detectedCount})`;
+            pText.textContent = `เสร็จสิ้น! พบ ${detectedCount} หลังคา`;
+
+            // Push detection as single undo-able action
+            if (detectedCount > 0) {
+                undoStackMap.push({ type: 'detection', count: detectedCount });
+            }
 
             updateCounter();
             updateResults();
+            updateUndoMap();
             showStatus(`ตรวจจับเสร็จ — รวม ${detectedCount} หลังคา จาก ${allAreas.filter(a => a._detected).length} พื้นที่`);
 
         } catch (e) {

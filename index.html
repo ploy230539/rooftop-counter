@@ -79,7 +79,8 @@
                                 <button id="btn-draw-rect" class="btn btn-draw">⬜ สี่เหลี่ยม</button>
                             </div>
                             <button id="btn-draw-freehand" class="btn btn-draw" style="width:100%">✏️ วาดอิสระ (Free Hand)</button>
-                            <button id="btn-clear-area" class="btn btn-outline-small">✕ ล้างวงพื้นที่</button>
+                            <button id="btn-erase-area" class="btn btn-eraser">🧹 ยางลบวงพื้นที่</button>
+                            <button id="btn-clear-area" class="btn btn-outline-small">✕ ล้างวงพื้นที่ทั้งหมด</button>
                         </div>
                         <div class="area-info" id="area-info"></div>
                     </div>
@@ -136,6 +137,7 @@
                         <p class="panel-desc">วาดพื้นที่หลายจุดได้ (ไม่ลบวงเดิม) แล้วกดตรวจจับทุกพื้นที่พร้อมกัน</p>
                         <div class="tool-row" style="margin-bottom:8px">
                             <button id="btn-freehand" class="btn btn-draw">✏️ วาดอิสระ (Free Hand)</button>
+                            <button id="btn-erase-area-map" class="btn btn-eraser">🧹 ยางลบวง</button>
                         </div>
                         <div class="area-info" id="area-count"></div>
                         <div class="setting-group">
@@ -160,7 +162,7 @@
                         <div class="tool-buttons">
                             <button id="btn-manual" class="btn btn-manual-pin">📌 เปิดโหมดปักหมุด</button>
                             <button id="btn-eraser-map" class="btn btn-eraser">🧹 โหมดลบหมุด AI</button>
-                            <button id="btn-undo-map" class="btn btn-undo" style="display:none">↩️ ลบหมุดล่าสุด</button>
+                            <button id="btn-undo-map" class="btn btn-undo" style="display:none">↩️ ย้อนกลับ</button>
                             <button id="btn-clear-ai-map" class="btn btn-outline-small">✕ ลบหมุด AI ทั้งหมด</button>
                             <button id="btn-clear-map" class="btn btn-danger">🗑️ ล้างทั้งหมด</button>
                         </div>
