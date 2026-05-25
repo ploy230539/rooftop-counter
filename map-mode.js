@@ -164,7 +164,16 @@
             manualPins.forEach(p => map.removeLayer(p.marker));
             manualPins = [];
             detectedCount = 0; eraserMode = false;
+            // Remove radius circle regardless of lock
             if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
+            // Reset radius UI
+            const slider = document.getElementById('radius-slider');
+            const lockBtn = document.getElementById('btn-lock-radius');
+            const clearBtn = document.getElementById('btn-clear-radius');
+            if (slider) slider.disabled = false;
+            if (lockBtn) lockBtn.style.display = 'block';
+            if (clearBtn) clearBtn.style.display = 'none';
+
             document.getElementById('btn-eraser-map').classList.remove('active');
             document.getElementById('btn-eraser-map').textContent = '🧹 โหมดลบหมุด AI';
             document.getElementById('btn-count').disabled = true;
@@ -276,12 +285,14 @@
 
     // ========================
     //  Radius Circle from Search Pin
+    //  Stays visible as reference boundary while drawing areas inside
     // ========================
     function setupRadiusSlider() {
         const slider = document.getElementById('radius-slider');
         const label = document.getElementById('radius-label');
-        const addBtn = document.getElementById('btn-add-radius');
-        if (!slider || !addBtn) return;
+        const lockBtn = document.getElementById('btn-lock-radius');
+        const clearBtn = document.getElementById('btn-clear-radius');
+        if (!slider || !lockBtn) return;
 
         function formatRadius(m) {
             return m >= 1000 ? (m / 1000).toFixed(1) + ' กม.' : m + ' ม.';
@@ -291,41 +302,61 @@
             const val = parseInt(slider.value);
             label.textContent = formatRadius(val);
 
-            // Update live preview circle
-            if (searchPin) {
+            // Update live preview circle (only if not locked)
+            if (searchPin && !(radiusCircle && radiusCircle._locked)) {
                 const center = searchPin.getLatLng();
                 if (radiusCircle) map.removeLayer(radiusCircle);
                 radiusCircle = L.circle(center, {
                     radius: val,
-                    color: '#3b82f6', weight: 2,
-                    fillColor: '#3b82f6', fillOpacity: 0.08,
-                    dashArray: '8,6'
+                    color: '#3b82f6', weight: 3,
+                    fillColor: '#3b82f6', fillOpacity: 0.05,
+                    dashArray: '12,8'
                 }).addTo(map);
+                radiusCircle._locked = false;
             }
         });
 
-        addBtn.addEventListener('click', () => {
+        // Lock radius — keeps it visible as a permanent reference boundary
+        lockBtn.addEventListener('click', () => {
             if (!searchPin) {
                 showStatus('⚠️ ค้นหาสถานที่ก่อน แล้วจึงกำหนดรัศมี');
                 return;
             }
+
             const val = parseInt(slider.value);
             const center = searchPin.getLatLng();
 
-            // Add the radius circle as a detection area
-            const areaCircle = L.circle(center, {
+            // Remove old circle, create a bold reference circle
+            if (radiusCircle) map.removeLayer(radiusCircle);
+            radiusCircle = L.circle(center, {
                 radius: val,
-                color: '#3b82f6', weight: 3,
-                fillColor: '#3b82f6', fillOpacity: 0.08
-            });
-            drawnItems.addLayer(areaCircle);
-            document.getElementById('btn-count').disabled = false;
-            updateAreaCount();
+                color: '#ef4444', weight: 3,
+                fillColor: '#ef4444', fillOpacity: 0.03,
+                dashArray: '15,10',
+                interactive: false  // can't accidentally click/drag it
+            }).addTo(map);
+            radiusCircle._locked = true;
+
+            // Disable slider while locked
+            slider.disabled = true;
+            lockBtn.style.display = 'none';
+            clearBtn.style.display = 'block';
 
             // Fit map to see the full radius
-            map.fitBounds(areaCircle.getBounds(), { padding: [30, 30] });
-            showStatus(`เพิ่มรัศมี ${formatRadius(val)} เป็นพื้นที่ตรวจจับ — วาดเพิ่มหรือกดตรวจจับ`);
+            map.fitBounds(radiusCircle.getBounds(), { padding: [30, 30] });
+            showStatus(`🔴 ล็อครัศมี ${formatRadius(val)} — วาดพื้นที่ย่อยข้างในได้เลย`);
         });
+
+        // Clear radius reference
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+                if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
+                slider.disabled = false;
+                lockBtn.style.display = 'block';
+                clearBtn.style.display = 'none';
+                showStatus('ลบวงรัศมีแล้ว');
+            });
+        }
     }
 
     function toggleEraser() {
@@ -737,7 +768,10 @@
             zoom = Math.min(Math.max(zoom, 10), 19);
 
             if (searchPin) { map.removeLayer(searchPin); searchPin = null; }
-            if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
+            // Only remove radius circle if not locked
+            if (radiusCircle && !radiusCircle._locked) {
+                map.removeLayer(radiusCircle); radiusCircle = null;
+            }
 
             searchPin = L.marker([lat, lng], {
                 icon: L.icon({
@@ -754,20 +788,28 @@
             map.flyTo([lat, lng], zoom, { duration: 1.5 });
             showStatus(`📍 ไปยังพิกัด ${lat.toFixed(4)}, ${lng.toFixed(4)} (${source})`);
 
-            // Show radius panel
+            // Show radius panel & reset UI if not locked
             const radiusPanel = document.getElementById('radius-panel');
             if (radiusPanel) radiusPanel.style.display = 'block';
 
-            // Show initial radius preview
-            const slider = document.getElementById('radius-slider');
-            if (slider) {
-                const val = parseInt(slider.value);
-                radiusCircle = L.circle([lat, lng], {
-                    radius: val,
-                    color: '#3b82f6', weight: 2,
-                    fillColor: '#3b82f6', fillOpacity: 0.08,
-                    dashArray: '8,6'
-                }).addTo(map);
+            if (!radiusCircle || !radiusCircle._locked) {
+                const slider = document.getElementById('radius-slider');
+                if (slider) {
+                    slider.disabled = false;
+                    const lockBtn = document.getElementById('btn-lock-radius');
+                    const clearBtn = document.getElementById('btn-clear-radius');
+                    if (lockBtn) lockBtn.style.display = 'block';
+                    if (clearBtn) clearBtn.style.display = 'none';
+
+                    const val = parseInt(slider.value);
+                    radiusCircle = L.circle([lat, lng], {
+                        radius: val,
+                        color: '#3b82f6', weight: 3,
+                        fillColor: '#3b82f6', fillOpacity: 0.05,
+                        dashArray: '12,8'
+                    }).addTo(map);
+                    radiusCircle._locked = false;
+                }
             }
         }
 

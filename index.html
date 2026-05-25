@@ -121,7 +121,7 @@
                     <!-- Radius from pin -->
                     <div class="panel" id="radius-panel" style="display:none">
                         <h3>📏 รัศมีจากหมุด</h3>
-                        <p class="panel-desc">กำหนดรัศมีรอบจุดค้นหา แล้วเพิ่มเป็นพื้นที่ตรวจจับ</p>
+                        <p class="panel-desc">กำหนดรัศมีขอบเขต → ล็อค → วาดพื้นที่ย่อยข้างในได้เลย วงรัศมีจะคงอยู่เป็นเส้นอ้างอิง</p>
                         <div class="setting-group">
                             <label>รัศมี: <span id="radius-label">500 ม.</span></label>
                             <input type="range" id="radius-slider" min="100" max="5000" value="500" step="100">
@@ -129,8 +129,11 @@
                                 <span>100 ม.</span><span>2.5 กม.</span><span>5 กม.</span>
                             </div>
                         </div>
-                        <button id="btn-add-radius" class="btn btn-outline" style="background:rgba(59,130,246,0.15)">
-                            ➕ เพิ่มรัศมีเป็นพื้นที่ตรวจจับ
+                        <button id="btn-lock-radius" class="btn btn-outline" style="background:rgba(239,68,68,0.15); border-color:#ef4444; color:#ef4444;">
+                            🔴 ล็อครัศมี — คงไว้เป็นขอบเขตอ้างอิง
+                        </button>
+                        <button id="btn-clear-radius" class="btn btn-outline-small" style="display:none; margin-top:6px;">
+                            ✕ ลบวงรัศมี
                         </button>
                     </div>
 
