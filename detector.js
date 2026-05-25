@@ -413,8 +413,8 @@ const RooftopDetector = {
     },
 
     // ========================
-    //  Building Block Detector (for road map / street map images)
-    //  Detects brown/beige rectangular building blocks from OSM-style maps
+    //  Building Block Detector (for map screenshot images)
+    //  Detects gray rectangular building blocks from Google Maps / OSM screenshots
     // ========================
     detectBlocks(imageData, w, h, areaMask, sensitivity, onProgress) {
         const pixels = imageData.data;
@@ -422,9 +422,13 @@ const RooftopDetector = {
 
         onProgress(5, 'วิเคราะห์บล็อกอาคาร...');
 
-        // Step 1: Identify building-colored pixels
+        // Step 1: Identify building-colored pixels (gray blocks)
         const mask = new Uint8Array(total);
-        const tolBase = 25 + (sensitivity - 5) * 5;
+
+        // Sensitivity adjusts luminance range — higher = wider range accepted
+        const lumLow  = 160 - (sensitivity - 5) * 8;   // default 160, range ~120–200
+        const lumHigh = 235 + (sensitivity - 5) * 2;    // default 235, range ~225–245
+        const maxSat  = 0.18 + (sensitivity - 5) * 0.02; // default 0.18, range ~0.08–0.28
 
         for (let i = 0; i < total; i++) {
             if (areaMask && !areaMask[i]) continue;
@@ -433,22 +437,26 @@ const RooftopDetector = {
             const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
             const lum = (r + g + b) / 3;
 
-            if (lum > 240) continue;
-            if (lum < 80) continue;
+            // Skip very dark (roads, shadows) or very bright (white background)
+            if (lum < lumLow || lum > lumHigh) continue;
 
             const maxC = Math.max(r, g, b);
             const minC = Math.min(r, g, b);
             const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
 
-            if (sat > 0.25) continue;
-            if (lum < 140 - tolBase || lum > 235) continue;
-            if (r < g - 5 || g < b - 5) continue;
+            // Buildings are low-saturation gray — reject colorful pixels
+            if (sat > maxSat) continue;
 
-            const warmth = r - b;
-            if (warmth < 1 || warmth > 60) continue;
+            // Skip obvious green (parks, vegetation)
+            const greenDom = g - Math.max(r, b);
+            if (greenDom > 8 && sat > 0.08) continue;
 
-            if (g > r + 3 && g > b + 3 && g - Math.min(r, b) > 12) continue;
-            if (maxC - minC < 3 && lum > 195) continue;
+            // Skip obvious blue (water)
+            const blueDom = b - Math.max(r, g);
+            if (blueDom > 8 && sat > 0.08) continue;
+
+            // Skip near-white pixels (map background is usually #f2f2f2 / #fff)
+            if (minC > 240) continue;
 
             mask[i] = 1;
         }

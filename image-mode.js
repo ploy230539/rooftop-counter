@@ -7,7 +7,6 @@
 
     // Tool modes: null | 'edit' | 'eraser' | 'draw-circle' | 'draw-rect' | 'draw-freehand'
     let toolMode = null;
-    let detectMode = 'satellite'; // 'satellite' | 'roadmap'
 
     // Markers: { x, y, auto:bool }
     let markers = [];
@@ -59,19 +58,6 @@
         document.getElementById('btn-draw-freehand').addEventListener('click', () => setTool(toolMode === 'draw-freehand' ? null : 'draw-freehand'));
         document.getElementById('btn-clear-area').addEventListener('click', clearArea);
 
-        // Detection mode toggle
-        document.getElementById('detect-mode-satellite').addEventListener('click', () => {
-            detectMode = 'satellite';
-            document.getElementById('detect-mode-satellite').classList.add('active');
-            document.getElementById('detect-mode-roadmap').classList.remove('active');
-            document.getElementById('satellite-settings').style.display = 'block';
-        });
-        document.getElementById('detect-mode-roadmap').addEventListener('click', () => {
-            detectMode = 'roadmap';
-            document.getElementById('detect-mode-roadmap').classList.add('active');
-            document.getElementById('detect-mode-satellite').classList.remove('active');
-            document.getElementById('satellite-settings').style.display = 'none';
-        });
         document.getElementById('btn-undo').addEventListener('click', undoMarker);
         document.getElementById('btn-clear-ai').addEventListener('click', () => { markers = markers.filter(m => !m.auto); updateUI(); render(); });
         document.getElementById('btn-clear-markers').addEventListener('click', () => { markers = []; updateUI(); render(); });
@@ -380,8 +366,6 @@
         const imageData = off.getContext('2d').getImageData(0, 0, img.width, img.height);
 
         const sensitivity = parseInt(document.getElementById('sensitivity').value);
-        const minArea2 = parseInt(document.getElementById('min-roof-size').value);
-        const maxArea2 = parseInt(document.getElementById('max-roof-size').value);
 
         // Build area mask for detector (null = whole image)
         let areaMask = null;
@@ -396,27 +380,17 @@
 
         await new Promise(resolve => {
             setTimeout(() => {
-                let results;
-                if (detectMode === 'roadmap') {
-                    // Road map mode: detect building blocks
-                    results = RooftopDetector.detectBlocks(
-                        imageData, img.width, img.height, areaMask, sensitivity,
-                        (pct, msg) => { fill.style.width = pct + '%'; text.textContent = msg; }
-                    );
-                } else {
-                    // Satellite mode: detect rooftops
-                    results = RooftopDetector.detect(
-                        imageData, img.width, img.height,
-                        { sensitivity, minArea: minArea2, maxArea: maxArea2, areaMask },
-                        (pct, msg) => { fill.style.width = pct + '%'; text.textContent = msg; }
-                    );
-                }
+                // Detect gray rectangular building blocks
+                const results = RooftopDetector.detectBlocks(
+                    imageData, img.width, img.height, areaMask, sensitivity,
+                    (pct, msg) => { fill.style.width = pct + '%'; text.textContent = msg; }
+                );
 
                 // Keep manual markers, replace auto
                 const manual = markers.filter(m => !m.auto);
                 markers = manual.concat(results.map(r => ({
                     x: r.x, y: r.y, auto: true,
-                    area: r.area, bbox: r.bbox, color: r.color
+                    area: r.area, bbox: r.bbox
                 })));
                 resolve();
             }, 50);

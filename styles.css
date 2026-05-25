@@ -117,14 +117,6 @@ input[type="range"]::-webkit-slider-thumb {
 .btn-draw:hover:not(:disabled) { background:#6d28d9; }
 .btn-draw.active { background:#f59e0b; color:#1e293b; box-shadow:0 0 0 2px rgba(245,158,11,0.4); }
 
-.detect-mode-row { display:flex; gap:6px; }
-.btn-mode {
-    flex:1; width:auto; background:#334155; color:#94a3b8; border:1px solid #475569;
-    font-size:0.82rem; padding:6px 8px;
-}
-.btn-mode:hover:not(:disabled) { background:#475569; color:white; }
-.btn-mode.active { background:#3b82f6; color:white; border-color:#3b82f6; box-shadow:0 0 0 2px rgba(59,130,246,0.3); }
-
 .btn-manual-pin { background:#f59e0b; color:#1e293b; }
 .btn-manual-pin:hover:not(:disabled) { background:#d97706; }
 .btn-manual-pin.active { background:#10b981; color:white; box-shadow:0 0 0 2px rgba(16,185,129,0.4); }
