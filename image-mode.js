@@ -387,7 +387,15 @@
     function updateAreaInfo() {
         const el = document.getElementById('area-info');
         if (areas.length === 0) { el.textContent = ''; return; }
-        el.innerHTML = `วาดแล้ว ${areas.length} พื้นที่`;
+        const detected = areas.filter(a => a._detected).length;
+        const pending = areas.length - detected;
+        if (detected > 0 && pending > 0) {
+            el.innerHTML = `วาดแล้ว ${areas.length} พื้นที่ (ตรวจจับแล้ว ${detected}, รอ ${pending})`;
+        } else if (detected > 0) {
+            el.innerHTML = `วาดแล้ว ${areas.length} พื้นที่ (ตรวจจับครบแล้ว ✅)`;
+        } else {
+            el.innerHTML = `วาดแล้ว ${areas.length} พื้นที่`;
+        }
     }
 
     // --- Undo ---
@@ -405,6 +413,9 @@
             for (let i = markers.length - 1; i >= 0 && toRemove > 0; i--) {
                 if (markers[i].auto) { markers.splice(i, 1); toRemove--; }
             }
+            // Reset _detected flag so areas can be re-detected
+            areas.forEach(a => a._detected = false);
+            updateAreaInfo();
         }
         updateUI(); render();
     }
@@ -412,6 +423,17 @@
     // --- Detection ---
     async function runDetection() {
         if (!img || detecting) return;
+
+        // Find only NEW (undetected) areas
+        const newAreas = areas.filter(a => !a._detected);
+        const hasNewAreas = newAreas.length > 0;
+        const hasNoAreas = areas.length === 0; // no areas at all → whole image
+
+        if (!hasNewAreas && !hasNoAreas) {
+            setHint('ทุกวงตรวจจับแล้ว — วาดวงใหม่เพื่อตรวจจับเพิ่ม');
+            return;
+        }
+
         detecting = true;
         const btn = document.getElementById('btn-detect');
         btn.disabled = true; btn.textContent = '⏳ กำลังตรวจจับ...';
@@ -427,13 +449,15 @@
 
         const sensitivity = parseInt(document.getElementById('sensitivity').value);
 
-        // Build area mask for detector (null = whole image)
+        // Build area mask from NEW areas only (null = whole image)
         let areaMask = null;
-        if (areas.length > 0) {
+        if (hasNewAreas) {
             areaMask = new Uint8Array(img.width * img.height);
             for (let y = 0; y < img.height; y++) {
                 for (let x = 0; x < img.width; x++) {
-                    if (isInArea(x, y)) areaMask[y * img.width + x] = 1;
+                    if (newAreas.some(a => pointInSingleArea(x, y, a))) {
+                        areaMask[y * img.width + x] = 1;
+                    }
                 }
             }
         }
@@ -463,6 +487,9 @@
             }, 50);
         });
 
+        // Mark new areas as detected
+        newAreas.forEach(a => a._detected = true);
+
         // Push detection as single undo-able action
         if (newCount > 0) undoStack.push({ type: 'detection', count: newCount });
 
@@ -471,8 +498,8 @@
         detecting = false;
 
         const autoCount = markers.filter(m => m.auto).length;
-        updateUI(); render();
-        setHint(`พบใหม่ ${newCount} หลัง (รวม ${autoCount} หลัง)` + (areas.length > 0 ? ' ในวงที่กำหนด' : '') + ' — วาดพื้นที่ใหม่แล้วกดตรวจจับเพิ่มได้');
+        updateUI(); updateAreaInfo(); render();
+        setHint(`พบใหม่ ${newCount} หลัง (รวม ${autoCount} หลัง)` + (hasNewAreas ? ` จาก ${newAreas.length} วงใหม่` : '') + ' — วาดพื้นที่ใหม่แล้วกดตรวจจับเพิ่มได้');
     }
 
     // --- Rendering ---
