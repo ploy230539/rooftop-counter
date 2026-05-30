@@ -5,7 +5,7 @@
     let panX = 0, panY = 0, scale = 1;
     let isPanning = false, panStart = { x: 0, y: 0 }, panStartOff = { x: 0, y: 0 };
 
-    // Tool modes: null | 'edit' | 'eraser' | 'erase-area' | 'draw-circle' | 'draw-rect' | 'draw-freehand'
+    // Tool modes: null | 'edit' | 'eraser' | 'erase-area' | 'draw-circle' | 'draw-rect' | 'draw-freehand' | 'draw-polygon'
     let toolMode = null;
 
     // Markers: { x, y, auto:bool }
@@ -25,6 +25,9 @@
     // Freehand drawing state
     let freehandPoints = [];
     let freehandDrawing = false;
+
+    // Polygon (point-by-point) drawing state
+    let polygonPoints = [];
 
     const MARKER_R = 7;
 
@@ -51,6 +54,7 @@
         canvas.addEventListener('mouseup', onUp);
         canvas.addEventListener('mouseleave', onUp);
         canvas.addEventListener('wheel', onWheel, { passive: false });
+        canvas.addEventListener('dblclick', onDblClick);
         setupTouch();
 
         // Buttons
@@ -61,6 +65,7 @@
         document.getElementById('btn-draw-circle').addEventListener('click', () => setTool(toolMode === 'draw-circle' ? null : 'draw-circle'));
         document.getElementById('btn-draw-rect').addEventListener('click', () => setTool(toolMode === 'draw-rect' ? null : 'draw-rect'));
         document.getElementById('btn-draw-freehand').addEventListener('click', () => setTool(toolMode === 'draw-freehand' ? null : 'draw-freehand'));
+        document.getElementById('btn-draw-polygon').addEventListener('click', () => setTool(toolMode === 'draw-polygon' ? null : 'draw-polygon'));
         document.getElementById('btn-clear-area').addEventListener('click', clearArea);
 
         document.getElementById('btn-undo').addEventListener('click', undo);
@@ -128,10 +133,12 @@
 
     // --- Tool mode ---
     function setTool(mode) {
-        // Clean up freehand state when leaving freehand mode
+        // Clean up freehand/polygon state when leaving
         if (toolMode === 'draw-freehand' && mode !== 'draw-freehand') {
-            freehandPoints = [];
-            freehandDrawing = false;
+            freehandPoints = []; freehandDrawing = false;
+        }
+        if (toolMode === 'draw-polygon' && mode !== 'draw-polygon') {
+            polygonPoints = [];
         }
         toolMode = mode;
         // Update button states
@@ -145,6 +152,8 @@
         document.getElementById('btn-draw-rect').classList.toggle('active', mode === 'draw-rect');
         document.getElementById('btn-draw-freehand').classList.toggle('active', mode === 'draw-freehand');
         document.getElementById('btn-draw-freehand').textContent = mode === 'draw-freehand' ? '✏️ กำลังวาด... (ลากเมาส์แล้วปล่อย)' : '✏️ วาดอิสระ (Free Hand)';
+        document.getElementById('btn-draw-polygon').classList.toggle('active', mode === 'draw-polygon');
+        document.getElementById('btn-draw-polygon').textContent = mode === 'draw-polygon' ? '📐 กำลังต่อจุด... (ดับเบิลคลิกปิด)' : '📐 ต่อจุด (Polygon)';
 
         // Undo button visible when anything can be undone
         document.getElementById('btn-undo').style.display = undoStack.length > 0 ? 'block' : 'none';
@@ -161,6 +170,7 @@
             'draw-circle': 'คลิกค้างแล้วลาก เพื่อวาดวงกลม',
             'draw-rect': 'คลิกค้างแล้วลาก เพื่อวาดสี่เหลี่ยม',
             'draw-freehand': 'กดเมาส์ค้าง แล้วลากวาดพื้นที่ → ปล่อยเพื่อปิดรูป',
+            'draw-polygon': 'คลิกวางจุดทีละจุด → ดับเบิลคลิกหรือคลิกจุดแรกเพื่อปิดรูป',
         };
         setHint(mode ? hints[mode] : '');
     }
@@ -191,10 +201,10 @@
 
         // Eraser mode — only delete markers
         if (toolMode === 'eraser') {
-            const ip = c2i(pos.x, pos.y);
-            const hitR = Math.max(MARKER_R, MARKER_R / scale) * 2.5;
+            // Hit test in SCREEN pixels — fixed 14px radius regardless of zoom
             for (let i = markers.length - 1; i >= 0; i--) {
-                if (Math.hypot(markers[i].x - ip.x, markers[i].y - ip.y) <= hitR) {
+                const mp = i2c(markers[i].x, markers[i].y);
+                if (Math.hypot(mp.x - pos.x, mp.y - pos.y) <= 14) {
                     markers.splice(i, 1); updateUI(); render(); return;
                 }
             }
@@ -203,18 +213,38 @@
 
         // Manual pin mode — add + delete
         if (toolMode === 'edit') {
-            const ip = c2i(pos.x, pos.y);
-            const hitR = Math.max(MARKER_R, MARKER_R / scale) * 2;
+            // Hit test in SCREEN pixels — must click within 12px of pin center
             for (let i = markers.length - 1; i >= 0; i--) {
-                if (Math.hypot(markers[i].x - ip.x, markers[i].y - ip.y) <= hitR) {
+                const mp = i2c(markers[i].x, markers[i].y);
+                if (Math.hypot(mp.x - pos.x, mp.y - pos.y) <= 12) {
                     markers.splice(i, 1); updateUI(); render(); return;
                 }
             }
+            // No pin hit → add new pin
+            const ip = c2i(pos.x, pos.y);
             if (ip.x >= 0 && ip.y >= 0 && ip.x <= img.width && ip.y <= img.height) {
                 markers.push({ x: ip.x, y: ip.y, auto: false });
                 undoStack.push({ type: 'marker' });
                 updateUI(); render();
             }
+            return;
+        }
+
+        // Polygon point-by-point mode
+        if (toolMode === 'draw-polygon') {
+            const ip = c2i(pos.x, pos.y);
+            // If clicking near the first point → close polygon
+            if (polygonPoints.length >= 3) {
+                const fp = i2c(polygonPoints[0].x, polygonPoints[0].y);
+                if (Math.hypot(fp.x - pos.x, fp.y - pos.y) <= 15) {
+                    finalizePolygon();
+                    return;
+                }
+            }
+            polygonPoints.push(ip);
+            render();
+            if (polygonPoints.length === 1) setHint('จุดที่ 1 — คลิกเพิ่มจุดต่อไป');
+            else setHint(`${polygonPoints.length} จุด — คลิกต่อ หรือ ดับเบิลคลิก/คลิกจุดแรกเพื่อปิดรูป`);
             return;
         }
 
@@ -264,6 +294,28 @@
             finalizeFreehand(); return;
         }
         isPanning = false; canvas.style.cursor = '';
+    }
+
+    function onDblClick(e) {
+        if (toolMode === 'draw-polygon' && polygonPoints.length >= 3) {
+            e.preventDefault();
+            finalizePolygon();
+        }
+    }
+
+    function finalizePolygon() {
+        if (polygonPoints.length < 3) {
+            setHint('ต้องวางอย่างน้อย 3 จุด');
+            return;
+        }
+        // Close the polygon
+        const pts = [...polygonPoints, polygonPoints[0]];
+        areas.push({ type: 'polygon', points: pts });
+        undoStack.push({ type: 'area' });
+        polygonPoints = [];
+        updateAreaInfo(); updateUI(); render();
+        setTool(null);
+        setHint(`วาดแล้ว ${areas.length} พื้นที่ — วาดเพิ่มหรือกด "ตรวจจับอัตโนมัติ"`);
     }
 
     function onWheel(e) {
@@ -519,6 +571,7 @@
         // Area being drawn (preview)
         if (drawStart && drawCurrent && (toolMode === 'draw-circle' || toolMode === 'draw-rect')) drawAreaPreview();
         if (freehandDrawing && freehandPoints.length > 1) drawFreehandPreview();
+        if (toolMode === 'draw-polygon' && polygonPoints.length > 0) drawPolygonPreview();
 
         // Markers
         drawMarkers();
@@ -600,6 +653,48 @@
             ctx.lineTo(p.x, p.y);
         }
         ctx.stroke();
+        ctx.restore();
+    }
+
+    function drawPolygonPreview() {
+        if (polygonPoints.length === 0) return;
+        ctx.save();
+
+        const pts = polygonPoints.map(p => i2c(p.x, p.y));
+
+        // Draw connecting lines
+        ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+
+        // Draw vertex dots
+        ctx.setLineDash([]);
+        for (let i = 0; i < pts.length; i++) {
+            ctx.beginPath();
+            ctx.arc(pts[i].x, pts[i].y, i === 0 ? 7 : 5, 0, Math.PI * 2);
+            ctx.fillStyle = i === 0 ? '#3b82f6' : '#f59e0b';
+            ctx.fill();
+            ctx.strokeStyle = 'white'; ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
+
+        // If ≥3 points, draw dashed closing line from last to first
+        if (pts.length >= 3) {
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)'; ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+            ctx.lineTo(pts[0].x, pts[0].y);
+            ctx.stroke();
+
+            // "Click to close" hint near first point
+            ctx.setLineDash([]);
+            ctx.fillStyle = 'rgba(59, 130, 246, 0.25)';
+            ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, 15, 0, Math.PI * 2); ctx.fill();
+        }
+
         ctx.restore();
     }
 
