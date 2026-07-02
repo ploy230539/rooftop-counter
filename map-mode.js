@@ -39,19 +39,37 @@
             crossOrigin: 'anonymous'
         });
 
+        // Labels overlay — shows street/soi names on top of satellite
+        map.createPane('labels');
+        map.getPane('labels').style.zIndex = 650;
+        map.getPane('labels').style.pointerEvents = 'none';
+        const labels = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap &copy; CARTO',
+            maxZoom: 19,
+            pane: 'labels'
+        });
+
         // Default to road map
         roadMap.addTo(map);
 
-        // Track active layer
+        // Track active layer — auto-toggle labels via checkbox click
         map.on('baselayerchange', e => {
             activeLayer = e.name.includes('ดาวเทียม') ? 'satellite' : 'road';
+            const cb = document.querySelector('.leaflet-control-layers input[type="checkbox"]');
+            if (activeLayer === 'satellite') {
+                if (cb && !cb.checked) cb.click();
+            } else {
+                if (cb && cb.checked) cb.click();
+            }
         });
 
         // Layer switcher control
         L.control.layers({
             '🗺️ แผนที่ถนน': roadMap,
             '🛰️ ดาวเทียม': satellite
-        }, null, { position: 'topleft', collapsed: false }).addTo(map);
+        }, {
+            '🏷️ ชื่อถนน/ซอย': labels
+        }, { position: 'topleft', collapsed: false }).addTo(map);
 
         drawnItems = new L.FeatureGroup().addTo(map);
         buildingMarkers = new L.FeatureGroup().addTo(map);
