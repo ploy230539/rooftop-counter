@@ -1,4 +1,5 @@
 // ===== Image Mode with Auto-Detection + Area Drawing + Manual Pins =====
+// Copyright (c) 2025-2026 Kanyarat Saosomphop. All rights reserved.
 (function () {
     let canvas, ctx;
     let img = null;

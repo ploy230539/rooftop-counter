@@ -1,4 +1,5 @@
 // ===== Rooftop Detector v2 =====
+// Copyright (c) 2025-2026 Kanyarat Saosomphop. All rights reserved.
 // Pure JavaScript computer vision for detecting rooftops in satellite imagery
 // v2: Edge-aware dilation + component splitting for dense housing
 

@@ -1,4 +1,5 @@
 // ===== Map Mode (AI Rooftop Detection + Manual Pins) =====
+// Copyright (c) 2025-2026 Kanyarat Saosomphop. All rights reserved.
 (function () {
     let map, drawnItems, buildingMarkers;
     let manualMode = false;

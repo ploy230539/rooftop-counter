@@ -349,6 +349,14 @@ input[type="range"]::-webkit-slider-thumb {
     border-top-color: #475569 !important;
 }
 
+/* Footer */
+.app-footer {
+    background: #0f172a; border-top: 1px solid #334155;
+    padding: 6px 16px; text-align: center;
+    font-size: 0.68rem; color: #475569; flex-shrink: 0;
+    user-select: none;
+}
+
 /* Responsive */
 @media (max-width:768px) {
     .main-container { flex-direction:column; }
