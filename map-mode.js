@@ -300,6 +300,32 @@
         });
 
         document.getElementById('avg-people-map').addEventListener('change', updateResults);
+
+        // Sensitivity: live value + auto re-detect (pixel detection only — OSM ignores it)
+        const mSensEl = document.getElementById('map-sensitivity');
+        const mSensVal = document.getElementById('map-sensitivity-val');
+        if (mSensEl && mSensVal) {
+            mSensEl.addEventListener('input', () => { mSensVal.textContent = mSensEl.value; });
+            mSensEl.addEventListener('change', () => {
+                mSensVal.textContent = mSensEl.value;
+                if (detecting) return;
+                // Only re-run when there are areas detected via pixel detection
+                const pixelAreas = drawnItems.getLayers().filter(a => a._detected && a._detectSource === 'pixel');
+                if (pixelAreas.length === 0) return;
+                // Clear AI markers, reset areas, re-run pixel detection with new sensitivity
+                buildingMarkers.clearLayers();
+                detectedCount = 0;
+                undoStackMap = undoStackMap.filter(u => typeof u === 'string');
+                drawnItems.getLayers().forEach(a => {
+                    a._detected = false;
+                    if (a.setStyle) a.setStyle({ color: '#f59e0b', fillColor: '#f59e0b' });
+                });
+                document.getElementById('btn-count').disabled = drawnItems.getLayers().length === 0;
+                updateCounter(); updateResults(); updateUndoMap();
+                showStatus('ปรับความไวเป็น ' + mSensEl.value + ' — กำลังนับใหม่...');
+                detectFromMap();
+            });
+        }
     }
 
     // ========================
@@ -640,6 +666,7 @@
 
                 if (area && area !== radiusCircle) {
                     area._detected = true;
+                    area._detectSource = 'osm';
                     area._detectedCount = added;
                     if (area.setStyle) area.setStyle({ color: '#10b981', fillColor: '#10b981' });
                 }
@@ -969,6 +996,7 @@
 
                 // Mark this area as detected
                 currentArea._detected = true;
+                currentArea._detectSource = 'pixel';
                 currentArea._detectedCount = areaDetected;
                 // Change area style to show it's been processed
                 if (currentArea.setStyle) {

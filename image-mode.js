@@ -89,6 +89,26 @@
             navigator.clipboard.writeText(document.getElementById('report-content').innerText);
         });
         document.getElementById('avg-people').addEventListener('change', updateUI);
+
+        // Sensitivity: live value + auto re-detect so users can tune AFTER counting
+        const sensEl = document.getElementById('sensitivity');
+        const sensVal = document.getElementById('sensitivity-val');
+        if (sensEl && sensVal) {
+            sensEl.addEventListener('input', () => { sensVal.textContent = sensEl.value; });
+            sensEl.addEventListener('change', () => {
+                sensVal.textContent = sensEl.value;
+                if (!img || detecting) return;
+                // Only re-run if there was already an auto detection to compare against
+                if (!markers.some(m => m.auto)) return;
+                // Drop AI markers, reset areas, keep manual pins → re-detect with new value
+                markers = markers.filter(m => !m.auto);
+                undoStack = undoStack.filter(u => u.type !== 'detection');
+                areas.forEach(a => a._detected = false);
+                setHint('ปรับความไวเป็น ' + sensEl.value + ' — กำลังนับใหม่...');
+                runDetection();
+            });
+        }
+
         window.addEventListener('resize', resizeCanvas);
     }
 

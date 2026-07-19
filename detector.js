@@ -577,31 +577,30 @@ const RooftopDetector = {
             sm[i] = s / c;
         }
 
-        // Background (white) peak in the bright range
-        let bgP = 248, bgV = -1;
-        for (let i = 236; i < 256; i++) if (sm[i] > bgV) { bgV = sm[i]; bgP = i; }
+        // Building gray = strongest gray peak BELOW near-white.
+        // Map backgrounds are near-white (lum > ~244); buildings are darker gray.
+        // We search only the gray range so that in dense areas — where buildings
+        // outnumber the white background — the building peak is still found correctly.
+        let bP = -1, bV = -1;
+        for (let i = 150; i <= 242; i++) if (sm[i] > bV) { bV = sm[i]; bP = i; }
+        if (bP < 0) return fallback;
 
-        // Building peak: strongest gray peak clearly below the background
-        const hi = Math.max(170, bgP - 6);
-        let bP = 215, bV = -1;
-        for (let i = 150; i < hi; i++) if (sm[i] > bV) { bV = sm[i]; bP = i; }
+        // Require a real cluster, else fall back
+        let maxAll = 0;
+        for (let i = 0; i < 256; i++) if (sm[i] > maxAll) maxAll = sm[i];
+        if (bV < maxAll * 0.02) return fallback;
 
-        // No distinct building peak → conservative fallback bounded by background
-        if (bV < bgV * 0.03) {
-            return { lumLow: 160, lumHigh: Math.min(236, bgP - 4), maxSat: 0.18 };
-        }
+        // Upper bound = valley between the building peak and the white background
+        let up = bP, upV = Infinity;
+        for (let i = bP; i <= Math.min(252, bP + 40); i++) if (sm[i] < upV) { upV = sm[i]; up = i; }
 
-        // Upper bound = valley between building peak and white background
-        let valley = bP, valV = Infinity;
-        for (let i = bP; i <= bgP; i++) if (sm[i] < valV) { valV = sm[i]; valley = i; }
-
-        // Lower bound = valley below the building peak (or a fixed offset)
-        let loValley = Math.max(120, bP - 45), loV = Infinity;
-        for (let i = Math.max(120, bP - 70); i < bP; i++) if (sm[i] < loV) { loV = sm[i]; loValley = i; }
+        // Lower bound = valley below the building peak
+        let lo = Math.max(120, bP - 40), loV = Infinity;
+        for (let i = Math.max(115, bP - 60); i < bP; i++) if (sm[i] < loV) { loV = sm[i]; lo = i; }
 
         return {
-            lumLow: Math.max(110, loValley),
-            lumHigh: Math.min(bgP - 2, valley + 2),
+            lumLow: Math.max(110, lo),
+            lumHigh: Math.min(250, up),
             maxSat: 0.18
         };
     },
