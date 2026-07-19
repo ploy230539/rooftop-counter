@@ -141,7 +141,21 @@
                     </div>
 
                     <div class="panel">
-                        <h3>🤖 ตรวจจับหลังคา</h3>
+                        <h3>🏢 นับอาคารจาก OpenStreetMap <span style="color:#10b981;font-size:0.7rem;font-weight:600;">แม่นยำ · ฟรี</span></h3>
+                        <p class="panel-desc">ดึงตำแหน่งอาคารจริงจากฐานข้อมูล OpenStreetMap — แม่นกว่าการเดาจากภาพมาก ไม่ต้องซูม<br>
+                            ▸ ถ้าวาดพื้นที่ไว้ = นับเฉพาะในพื้นที่ &nbsp; ▸ ถ้าไม่วาด = นับทั้งหน้าจอที่เห็น</p>
+                        <button id="btn-osm" class="btn btn-detect" style="background:#059669;border-color:#10b981;">
+                            🏢 นับอาคารจาก OSM
+                        </button>
+                        <div class="progress-bar" id="osm-progress-bar" style="display:none">
+                            <div class="progress-fill" id="osm-progress-fill" style="background:#10b981;"></div>
+                            <span class="progress-text" id="osm-progress-text">0%</span>
+                        </div>
+                        <p class="panel-desc" style="margin-top:6px;font-size:0.72rem;color:#94a3b8;">* ในเมือง/ตัวอำเภอข้อมูลค่อนข้างครบ · พื้นที่ชนบทห่างไกลอาจยังไม่ครบ (ใช้ตรวจจับจากภาพด้านล่างเสริมได้)</p>
+                    </div>
+
+                    <div class="panel">
+                        <h3>🤖 ตรวจจับหลังคาจากภาพ</h3>
                         <p class="panel-desc">วาดพื้นที่หลายจุดได้ (ไม่ลบวงเดิม) แล้วกดตรวจจับทุกพื้นที่พร้อมกัน</p>
                         <div class="tool-row" style="margin-bottom:8px">
                             <button id="btn-freehand" class="btn btn-draw">✏️ วาดอิสระ (Free Hand)</button>

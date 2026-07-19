@@ -421,16 +421,22 @@ const RooftopDetector = {
         const pixels = imageData.data;
         const total = w * h;
 
-        onProgress(5, 'วิเคราะห์บล็อกอาคาร...');
+        onProgress(4, 'วิเคราะห์สีอาคารอัตโนมัติ...');
+
+        // --- Step 0: Auto-calibrate the building gray from the image histogram ---
+        // Adapts to Google Maps / OSM / any light map theme instead of fixed thresholds
+        const cal = this.calibrateBlockColors(pixels, w, h, areaMask);
+
+        // Sensitivity nudges the calibrated band wider/narrower
+        const sAdj = sensitivity - 5;
+        const lumLow  = cal.lumLow  - sAdj * 4;
+        const lumHigh = cal.lumHigh + sAdj * 1.5;
+        const maxSat  = cal.maxSat  + sAdj * 0.015;
+
+        onProgress(10, 'จับพิกเซลอาคาร...');
 
         // Step 1: Identify building-colored pixels (gray blocks)
         const mask = new Uint8Array(total);
-
-        // Sensitivity adjusts luminance range — higher = wider range accepted
-        const lumLow  = 160 - (sensitivity - 5) * 8;   // default 160, range ~120–200
-        const lumHigh = 235 + (sensitivity - 5) * 2;    // default 235, range ~225–245
-        const maxSat  = 0.18 + (sensitivity - 5) * 0.02; // default 0.18, range ~0.08–0.28
-
         for (let i = 0; i < total; i++) {
             if (areaMask && !areaMask[i]) continue;
 
@@ -438,7 +444,6 @@ const RooftopDetector = {
             const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
             const lum = (r + g + b) / 3;
 
-            // Skip very dark (roads, shadows) or very bright (white background)
             if (lum < lumLow || lum > lumHigh) continue;
 
             const maxC = Math.max(r, g, b);
@@ -450,37 +455,36 @@ const RooftopDetector = {
 
             // Skip obvious green (parks, vegetation)
             const greenDom = g - Math.max(r, b);
-            if (greenDom > 8 && sat > 0.08) continue;
+            if (greenDom > 6 && sat > 0.06) continue;
 
-            // Skip obvious blue (water)
+            // Skip obvious blue (roads/water are slightly blue in Google/OSM)
             const blueDom = b - Math.max(r, g);
-            if (blueDom > 8 && sat > 0.08) continue;
-
-            // Skip near-white pixels (map background is usually #f2f2f2 / #fff)
-            if (minC > 240) continue;
+            if (blueDom > 6 && sat > 0.06) continue;
 
             mask[i] = 1;
         }
 
-        onProgress(25, 'ค้นหากลุ่มอาคาร...');
+        // --- Step 2: Edge detection to separate touching buildings ---
+        // Google draws thin borders/gaps between adjacent buildings; use them as barriers
+        onProgress(26, 'ตรวจหาขอบอาคาร (แยกหลังที่ติดกัน)...');
+        const edges = this.sobelEdges(pixels, w, h, sensitivity + 2);
 
-        // Step 2: Light erosion — keep pixel if at least 3 of 4 neighbors are also building
-        const eroded = new Uint8Array(total);
-        for (let y = 1; y < h - 1; y++) {
-            for (let x = 1; x < w - 1; x++) {
-                const i = y * w + x;
-                if (!mask[i]) continue;
-                const neighbors = mask[i-1] + mask[i+1] + mask[i-w] + mask[i+w];
-                if (neighbors >= 3) eroded[i] = 1;
-            }
+        // Carve the mask along edges so a row of touching buildings splits into pieces
+        const carved = new Uint8Array(total);
+        for (let i = 0; i < total; i++) {
+            if (mask[i] && !edges[i]) carved[i] = 1;
         }
 
-        onProgress(40, 'จัดกลุ่มอาคาร...');
+        onProgress(36, 'ลบจุดรบกวน...');
+        // Light erosion — drop isolated 1px specks (text edges, anti-aliasing)
+        const cleaned = this.erode(carved, w, h, 1);
+
+        onProgress(46, 'จัดกลุ่มอาคาร...');
 
         // Step 3: Connected component labeling
-        const { labels, count: labelCount } = this.connectedComponents(eroded, w, h);
+        const { labels, count: labelCount } = this.connectedComponents(cleaned, w, h);
 
-        onProgress(65, `พบ ${labelCount} กลุ่ม — กรองขนาด...`);
+        onProgress(62, `พบ ${labelCount} กลุ่ม — กรองขนาด...`);
 
         // Step 4: Collect component info
         const compInfo = [];
@@ -501,35 +505,105 @@ const RooftopDetector = {
             }
         }
 
-        // Step 5: Filter by size and shape
-        const minBuildingArea = 15;
-        const maxBuildingArea = 80000;
+        onProgress(72, 'กรอง/แยกอาคาร...');
+
+        // Step 5: Filter by size/shape, split oversized merged blocks
+        const minBuildingArea = 12;
+        const maxBuildingArea = 50000;
         const results = [];
 
-        for (let id = 1; id <= labelCount; id++) {
-            const c = compInfo[id];
-            if (c.area < minBuildingArea || c.area > maxBuildingArea) continue;
-
+        const pushResult = (c) => {
             const bw = c.maxX - c.minX + 1;
             const bh = c.maxY - c.minY + 1;
+            if (c.area < minBuildingArea) return;
             const rect = c.area / (bw * bh);
-
-            if (rect < 0.4) continue;
-
+            if (rect < 0.35) return;                    // not blocky enough
             const aspect = Math.max(bw, bh) / Math.min(bw, bh);
-            if (aspect > 8) continue;
-
+            if (aspect > 7) return;                     // long thin road strip
             results.push({
                 x: Math.round(c.sumX / c.area),
                 y: Math.round(c.sumY / c.area),
                 area: c.area,
                 bbox: { x: c.minX, y: c.minY, w: bw, h: bh }
             });
+        };
+
+        for (let id = 1; id <= labelCount; id++) {
+            const c = compInfo[id];
+            if (c.area < minBuildingArea) continue;
+
+            // Oversized solid block = still-merged buildings → try to split
+            if (c.area > maxBuildingArea) {
+                const subs = this.splitComponent(labels, id, c, w, h, minBuildingArea);
+                subs.forEach(pushResult);
+                continue;
+            }
+            pushResult(c);
         }
 
         onProgress(95, `พบ ${results.length} อาคาร`);
         onProgress(100, 'เสร็จสิ้น!');
         return results;
+    },
+
+    // ========================
+    //  Auto-calibrate building color from image histogram
+    //  Finds the "building gray" peak sitting just below the white background peak,
+    //  so thresholds adapt to Google / OSM / any light map theme automatically.
+    // ========================
+    calibrateBlockColors(pixels, w, h, areaMask) {
+        const fallback = { lumLow: 160, lumHigh: 236, maxSat: 0.18 };
+        const hist = new Float32Array(256);
+        const step = Math.max(1, Math.floor((w * h) / 200000)); // sample for speed
+        let n = 0;
+
+        for (let i = 0; i < w * h; i += step) {
+            if (areaMask && !areaMask[i]) continue;
+            const idx = i * 4;
+            const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+            const maxC = Math.max(r, g, b), minC = Math.min(r, g, b);
+            const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+            if (sat > 0.16) continue;                   // gray pixels only
+            const lum = (r + g + b) / 3;
+            hist[Math.min(255, Math.round(lum))]++; n++;
+        }
+        if (n < 50) return fallback;
+
+        // Smooth the histogram (±2 window)
+        const sm = new Float32Array(256);
+        for (let i = 0; i < 256; i++) {
+            let s = 0, c = 0;
+            for (let k = -2; k <= 2; k++) { const j = i + k; if (j >= 0 && j < 256) { s += hist[j]; c++; } }
+            sm[i] = s / c;
+        }
+
+        // Background (white) peak in the bright range
+        let bgP = 248, bgV = -1;
+        for (let i = 236; i < 256; i++) if (sm[i] > bgV) { bgV = sm[i]; bgP = i; }
+
+        // Building peak: strongest gray peak clearly below the background
+        const hi = Math.max(170, bgP - 6);
+        let bP = 215, bV = -1;
+        for (let i = 150; i < hi; i++) if (sm[i] > bV) { bV = sm[i]; bP = i; }
+
+        // No distinct building peak → conservative fallback bounded by background
+        if (bV < bgV * 0.03) {
+            return { lumLow: 160, lumHigh: Math.min(236, bgP - 4), maxSat: 0.18 };
+        }
+
+        // Upper bound = valley between building peak and white background
+        let valley = bP, valV = Infinity;
+        for (let i = bP; i <= bgP; i++) if (sm[i] < valV) { valV = sm[i]; valley = i; }
+
+        // Lower bound = valley below the building peak (or a fixed offset)
+        let loValley = Math.max(120, bP - 45), loV = Infinity;
+        for (let i = Math.max(120, bP - 70); i < bP; i++) if (sm[i] < loV) { loV = sm[i]; loValley = i; }
+
+        return {
+            lumLow: Math.max(110, loValley),
+            lumHigh: Math.min(bgP - 2, valley + 2),
+            maxSat: 0.18
+        };
     },
 
     // ========================

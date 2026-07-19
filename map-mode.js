@@ -167,6 +167,8 @@
 
         // Buttons
         document.getElementById('btn-count').addEventListener('click', detectFromMap);
+        const btnOsm = document.getElementById('btn-osm');
+        if (btnOsm) btnOsm.addEventListener('click', countBuildingsOSM);
 
         document.getElementById('btn-manual').addEventListener('click', () => {
             const wasManual = manualMode;
@@ -553,6 +555,180 @@
                 if (marker._icon) marker._icon.style.cursor = '';
             }
         });
+    }
+
+    // ========================
+    //  OSM Overpass — count REAL building footprints
+    //  Pulls actual building geometry from OpenStreetMap instead of
+    //  guessing from pixels. Far more accurate where data exists.
+    // ========================
+    async function countBuildingsOSM() {
+        if (detecting) return;
+        detecting = true;
+
+        const btn = document.getElementById('btn-osm');
+        btn.disabled = true;
+        btn.textContent = '⏳ กำลังดึงข้อมูลอาคาร...';
+
+        const bar = document.getElementById('osm-progress-bar');
+        const fill = document.getElementById('osm-progress-fill');
+        const pText = document.getElementById('osm-progress-text');
+        bar.style.display = 'block';
+        fill.style.width = '8%';
+        pText.textContent = 'เชื่อมต่อ OpenStreetMap...';
+
+        try {
+            // --- Decide which region(s) to query ---
+            // Priority: drawn (undetected) areas → locked radius → current viewport
+            const allAreas = drawnItems.getLayers();
+            let regions;
+            if (allAreas.length > 0) {
+                const newAreas = allAreas.filter(a => !a._detected);
+                if (newAreas.length === 0) {
+                    showStatus('ทุกพื้นที่นับแล้ว — วาดพื้นที่ใหม่เพื่อนับเพิ่ม');
+                    resetOsmBtn(); return;
+                }
+                regions = newAreas.map(a => ({ area: a, bounds: a.getBounds() }));
+            } else if (radiusCircle && radiusCircle._locked) {
+                regions = [{ area: radiusCircle, bounds: radiusCircle.getBounds() }];
+            } else {
+                regions = [{ area: null, bounds: map.getBounds() }];
+            }
+
+            let totalNew = 0;
+
+            for (let i = 0; i < regions.length; i++) {
+                const { area, bounds } = regions[i];
+                const label = regions.length > 1 ? `พื้นที่ ${i + 1}/${regions.length}` : 'พื้นที่';
+
+                // Guard against querying an enormous area
+                const km2 = approxAreaKm2(bounds);
+                if (km2 > 60) {
+                    showStatus(`⚠️ ${label} กว้างเกินไป (~${Math.round(km2)} ตร.กม.) — ซูมเข้าหรือวาดพื้นที่ให้เล็กลง`);
+                    continue;
+                }
+
+                pText.textContent = `${label}: ดึงข้อมูลอาคาร...`;
+                fill.style.width = (10 + (i / regions.length) * 80) + '%';
+
+                const s = bounds.getSouth(), w = bounds.getWest(), n = bounds.getNorth(), e = bounds.getEast();
+                const query =
+                    `[out:json][timeout:60];` +
+                    `(way["building"](${s},${w},${n},${e});` +
+                    `relation["building"](${s},${w},${n},${e}););` +
+                    `out center;`;
+
+                const elements = await overpassFetch(query);
+
+                let added = 0;
+                for (const el of elements) {
+                    const c = el.center || (el.type === 'node' ? { lat: el.lat, lon: el.lon } : null);
+                    if (!c) continue;
+                    const latlng = L.latLng(c.lat, c.lon);
+                    // Keep only buildings whose centroid falls inside the drawn area
+                    if (area && !latLngInArea(latlng, area)) continue;
+
+                    const marker = L.marker(latlng, {
+                        icon: L.divIcon({ className: 'map-marker', iconSize: [10, 10], iconAnchor: [5, 5] })
+                    }).addTo(buildingMarkers);
+                    marker._areaLayer = area;
+                    added++;
+                }
+
+                detectedCount += added;
+                totalNew += added;
+
+                if (area && area !== radiusCircle) {
+                    area._detected = true;
+                    area._detectedCount = added;
+                    if (area.setStyle) area.setStyle({ color: '#10b981', fillColor: '#10b981' });
+                }
+            }
+
+            fill.style.width = '100%';
+            pText.textContent = `เสร็จ! พบ ${totalNew} อาคาร`;
+
+            if (totalNew > 0) undoStackMap.push({ type: 'detection', count: totalNew });
+
+            updateCounter(); updateResults(); updateUndoMap();
+
+            if (totalNew === 0) {
+                showStatus('ไม่พบอาคารใน OpenStreetMap สำหรับพื้นที่นี้ — อาจยังไม่มีคนแมป ลองใช้ตรวจจับจากภาพแทน');
+            } else {
+                showStatus(`🏢 OpenStreetMap: พบ ${totalNew} อาคาร (รวมทั้งหมด ${detectedCount} หลัง)`);
+            }
+        } catch (err) {
+            console.error('OSM error:', err);
+            showStatus('⚠️ ดึงข้อมูล OSM ไม่ได้: ' + err.message + ' — ลองใหม่อีกครั้งใน 1-2 นาที');
+        }
+
+        resetOsmBtn();
+    }
+
+    // Try multiple Overpass mirrors for reliability
+    async function overpassFetch(query) {
+        const endpoints = [
+            'https://overpass-api.de/api/interpreter',
+            'https://overpass.kumi.systems/api/interpreter',
+            'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+        ];
+        let lastErr;
+        for (const ep of endpoints) {
+            try {
+                const res = await fetch(ep, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'data=' + encodeURIComponent(query)
+                });
+                if (!res.ok) { lastErr = new Error('HTTP ' + res.status); continue; }
+                const json = await res.json();
+                return json.elements || [];
+            } catch (e) { lastErr = e; }
+        }
+        throw lastErr || new Error('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้');
+    }
+
+    function resetOsmBtn() {
+        detecting = false;
+        const btn = document.getElementById('btn-osm');
+        btn.disabled = false;
+        btn.textContent = '🏢 นับอาคารจาก OSM';
+        setTimeout(() => {
+            const bar = document.getElementById('osm-progress-bar');
+            if (bar) bar.style.display = 'none';
+        }, 1500);
+    }
+
+    // Approx area of a lat/lng bounds in km²
+    function approxAreaKm2(bounds) {
+        const s = bounds.getSouth(), n = bounds.getNorth(), w = bounds.getWest(), e = bounds.getEast();
+        const h = map.distance(L.latLng(s, w), L.latLng(n, w)) / 1000;
+        const wid = map.distance(L.latLng(s, w), L.latLng(s, e)) / 1000;
+        return h * wid;
+    }
+
+    // Is a latlng inside a drawn area (circle / polygon / rectangle)?
+    function latLngInArea(latlng, area) {
+        if (area instanceof L.Circle) {
+            return map.distance(latlng, area.getLatLng()) <= area.getRadius();
+        }
+        if (area instanceof L.Polygon) {
+            return pointInPolygonLL(latlng, area.getLatLngs()[0]);
+        }
+        return true;
+    }
+
+    function pointInPolygonLL(p, ring) {
+        let inside = false;
+        const x = p.lng, y = p.lat;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const xi = ring[i].lng, yi = ring[i].lat;
+            const xj = ring[j].lng, yj = ring[j].lat;
+            if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+                inside = !inside;
+            }
+        }
+        return inside;
     }
 
     // ========================

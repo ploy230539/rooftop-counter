@@ -6,6 +6,9 @@
     let panX = 0, panY = 0, scale = 1;
     let isPanning = false, panStart = { x: 0, y: 0 }, panStartOff = { x: 0, y: 0 };
 
+    // Logical (CSS-pixel) viewport size + device pixel ratio for HiDPI crispness
+    let viewW = 0, viewH = 0, dpr = 1;
+
     // Tool modes: null | 'edit' | 'eraser' | 'erase-area' | 'draw-circle' | 'draw-rect' | 'draw-freehand' | 'draw-polygon'
     let toolMode = null;
 
@@ -116,14 +119,23 @@
         const wrap = document.getElementById('canvas-wrap');
         if (!wrap || wrap.style.display === 'none') return;
         const w = wrap.clientWidth, h = wrap.clientHeight;
-        if (w > 0 && h > 0) { canvas.width = w; canvas.height = h; render(); }
+        if (w > 0 && h > 0) {
+            dpr = window.devicePixelRatio || 1;
+            viewW = w; viewH = h;
+            // CSS size stays logical; backing store is scaled up by DPR for sharpness
+            canvas.style.width = w + 'px';
+            canvas.style.height = h + 'px';
+            canvas.width = Math.round(w * dpr);
+            canvas.height = Math.round(h * dpr);
+            render();
+        }
     }
 
     function fitImage() {
         if (!img) return;
-        scale = Math.min((canvas.width - 20) / img.width, (canvas.height - 20) / img.height, 2);
-        panX = (canvas.width - img.width * scale) / 2;
-        panY = (canvas.height - img.height * scale) / 2;
+        scale = Math.min((viewW - 20) / img.width, (viewH - 20) / img.height, 2);
+        panX = (viewW - img.width * scale) / 2;
+        panY = (viewH - img.height * scale) / 2;
         render();
     }
 
@@ -558,12 +570,15 @@
     // --- Rendering ---
     function render() {
         if (!canvas || !ctx) return;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // Base transform maps CSS-pixel coords → physical pixels (HiDPI crispness)
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, viewW, viewH);
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, viewW, viewH);
         if (!img) return;
 
-        // Image
+        // Image — disable smoothing when magnifying so pixels stay sharp, not blurry
         ctx.save(); ctx.translate(panX, panY); ctx.scale(scale, scale);
+        ctx.imageSmoothingEnabled = scale < 1;
         ctx.drawImage(img, 0, 0); ctx.restore();
 
         // Dim outside drawn areas
