@@ -83,6 +83,7 @@
             updateUI(); updateAreaInfo(); render();
         });
         document.getElementById('btn-export').addEventListener('click', showReport);
+        document.getElementById('btn-save-training').addEventListener('click', saveTrainingImages);
         document.getElementById('modal-close').addEventListener('click', () => document.getElementById('report-modal').style.display = 'none');
         document.getElementById('btn-print').addEventListener('click', () => window.print());
         document.getElementById('btn-copy').addEventListener('click', () => {
@@ -767,6 +768,9 @@
         // Undo button visible when anything can be undone
         document.getElementById('btn-undo').style.display = undoStack.length > 0 ? 'block' : 'none';
 
+        // Save-for-training available once there is an image + at least one marker
+        document.getElementById('btn-save-training').disabled = !(img && total > 0);
+
         document.getElementById('canvas-counter').textContent =
             `หลังคา: ${total}` + (manual > 0 && auto > 0 ? ` (อัตโนมัติ ${auto} + มือ ${manual})` : manual > 0 ? ` (มือ ${manual})` : '');
 
@@ -783,6 +787,65 @@
     function setHint(msg) {
         const el = document.getElementById('canvas-hint');
         el.textContent = msg; el.classList.toggle('show', !!msg);
+    }
+
+    // --- Save Before/After images + labels for AI training ---
+    function saveTrainingImages() {
+        if (!img || markers.length === 0) return;
+
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+        // BEFORE — clean original image at native resolution
+        const before = document.createElement('canvas');
+        before.width = img.width; before.height = img.height;
+        before.getContext('2d').drawImage(img, 0, 0);
+
+        // AFTER — original + markers drawn at native resolution
+        const after = document.createElement('canvas');
+        after.width = img.width; after.height = img.height;
+        const actx = after.getContext('2d');
+        actx.drawImage(img, 0, 0);
+        const r = Math.max(4, Math.round(img.width / 220));
+        markers.forEach(m => {
+            actx.beginPath();
+            actx.arc(m.x, m.y, r, 0, Math.PI * 2);
+            actx.fillStyle = m.auto ? '#10b981' : '#f59e0b';  // green = AI, orange = manual
+            actx.fill();
+            actx.lineWidth = Math.max(1, r * 0.28);
+            actx.strokeStyle = 'white';
+            actx.stroke();
+        });
+
+        // LABELS — the real training gold: pin coordinates + counts
+        const labels = {
+            source_image: 'before-' + ts + '.png',
+            width: img.width,
+            height: img.height,
+            total: markers.length,
+            auto: markers.filter(m => m.auto).length,
+            manual: markers.filter(m => !m.auto).length,
+            points: markers.map(m => ({
+                x: Math.round(m.x),
+                y: Math.round(m.y),
+                type: m.auto ? 'auto' : 'manual',
+                bbox: m.bbox || null
+            }))
+        };
+
+        const dl = (blob, name) => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = name;
+            document.body.appendChild(a); a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 800);
+        };
+
+        // Stagger downloads so browsers don't drop them
+        before.toBlob(b => dl(b, 'before-' + ts + '.png'), 'image/png');
+        setTimeout(() => after.toBlob(b => dl(b, 'after-' + ts + '.png'), 'image/png'), 300);
+        setTimeout(() => dl(new Blob([JSON.stringify(labels, null, 2)], { type: 'application/json' }), 'labels-' + ts + '.json'), 600);
+
+        setHint(`💾 เซฟแล้ว: before + after + labels (${markers.length} หลัง) — เก็บไว้เทรน AI`);
     }
 
     // --- Report ---

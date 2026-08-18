@@ -1,5 +1,5 @@
 // Service Worker — Rooftop Counter PWA
-const CACHE_NAME = 'rooftop-v21';
+const CACHE_NAME = 'rooftop-v22';
 const ASSETS = [
   './',
   './index.html',
