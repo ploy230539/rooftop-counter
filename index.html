@@ -222,6 +222,7 @@
                     <div class="panel">
                         <h3>🗄️ เก็บข้อมูลทำเล <span style="color:#a78bfa;font-size:0.7rem;font-weight:600;">ฐานข้อมูล</span></h3>
                         <p class="panel-desc">หลังนับเสร็จ บันทึกทำเลนี้เข้าฐานข้อมูล — เก็บจำนวนหลังคา ประชากร พิกัดหมุด และวันที่ ไว้ใช้ต่อ/นำเสนอ</p>
+                        <div id="cloud-auth" style="display:none;margin-bottom:8px"></div>
                         <div class="setting-group">
                             <label for="survey-label">ชื่อทำเล</label>
                             <input type="text" id="survey-label" placeholder="เช่น อาคาร A รัศมี 500ม.">
@@ -315,7 +316,10 @@
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="cloud-config.js"></script>
     <script src="db.js"></script>
+    <script src="cloud.js"></script>
     <script src="detector.js"></script>
     <script src="image-mode.js"></script>
     <script src="map-mode.js"></script>

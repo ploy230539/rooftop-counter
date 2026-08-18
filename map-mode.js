@@ -20,6 +20,9 @@
     // Undo stack: 'area' | 'pin' | { type:'detection', count:N }
     let undoStackMap = [];
 
+    // Active survey store: local IndexedDB (SurveyDB) or cloud (CloudDB) when logged in
+    let surveyStore = null;
+
     function initMap() {
         if (mapInitialized) return;
         mapInitialized = true;
@@ -338,7 +341,70 @@
         if (sImp) sImp.addEventListener('click', () => document.getElementById('survey-import-file').click());
         const sImpFile = document.getElementById('survey-import-file');
         if (sImpFile) sImpFile.addEventListener('change', importSurveys);
+        surveyStore = window.SurveyDB;   // default: local
         renderSurveyList();
+        renderCloudAuth();               // switch to cloud + re-render if a session exists
+    }
+
+    // ========================
+    //  Cloud auth UI (Supabase) — only shown when cloud is configured
+    // ========================
+    function renderCloudAuth() {
+        const el = document.getElementById('cloud-auth');
+        if (!el) return;
+        if (!window.CloudDB || !CloudDB.configured()) {
+            el.style.display = 'none';    // not set up → stay in local mode
+            return;
+        }
+        el.style.display = 'block';
+        CloudDB.currentUser().then(user => {
+            if (user) {
+                surveyStore = CloudDB;
+                el.innerHTML =
+                    `<div style="display:flex;align-items:center;gap:6px;color:#34d399;font-size:0.8rem;margin-bottom:6px">
+                        ☁️ <span style="flex:1;overflow:hidden;text-overflow:ellipsis">${user.email}</span>
+                        <button id="cloud-logout" class="btn btn-outline-small" style="padding:2px 8px">ออก</button>
+                     </div>
+                     <button id="cloud-migrate" class="btn btn-outline-small" style="width:100%">⬆️ ดันข้อมูลในเครื่องขึ้นคลาวด์</button>`;
+                document.getElementById('cloud-logout').addEventListener('click', async () => {
+                    await CloudDB.signOut();
+                    surveyStore = window.SurveyDB;
+                    renderCloudAuth(); renderSurveyList();
+                    showStatus('ออกจากคลาวด์แล้ว — ใช้ข้อมูลในเครื่อง');
+                });
+                document.getElementById('cloud-migrate').addEventListener('click', async () => {
+                    try {
+                        const local = await window.SurveyDB.list();
+                        const n = await CloudDB.importAll(local);
+                        renderSurveyList();
+                        showStatus(`⬆️ ดันขึ้นคลาวด์ ${n} ทำเลแล้ว`);
+                    } catch (e) { showStatus('ดันขึ้นคลาวด์ไม่สำเร็จ: ' + (e.message || e)); }
+                });
+                renderSurveyList();
+            } else {
+                el.innerHTML =
+                    `<div style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem">
+                        <div style="color:#94a3b8">☁️ เข้าสู่ระบบคลาวด์เพื่อแชร์ข้อมูลข้ามเครื่อง</div>
+                        <input id="cloud-email" type="email" placeholder="อีเมล" autocomplete="username" style="padding:6px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0">
+                        <input id="cloud-pw" type="password" placeholder="รหัสผ่าน" autocomplete="current-password" style="padding:6px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0">
+                        <button id="cloud-login" class="btn btn-outline-small">เข้าสู่ระบบ</button>
+                     </div>`;
+                document.getElementById('cloud-login').addEventListener('click', doCloudLogin);
+            }
+        }).catch(() => {});
+    }
+
+    async function doCloudLogin() {
+        try {
+            const email = document.getElementById('cloud-email').value.trim();
+            const pw = document.getElementById('cloud-pw').value;
+            await CloudDB.signIn(email, pw);
+            surveyStore = CloudDB;
+            renderCloudAuth(); renderSurveyList();
+            showStatus('☁️ เข้าสู่ระบบคลาวด์แล้ว — ข้อมูลจะแชร์ข้ามเครื่อง');
+        } catch (e) {
+            showStatus('เข้าสู่ระบบไม่สำเร็จ: ' + (e.message || e));
+        }
     }
 
     // ========================
@@ -393,7 +459,7 @@
             points: collectSurveyPoints()
         };
         try {
-            await SurveyDB.save(rec);
+            await surveyStore.save(rec);
             document.getElementById('survey-label').value = '';
             document.getElementById('survey-notes').value = '';
             showStatus(`🗄️ บันทึกแล้ว: ${rec.label} — ${rec.buildings_total} หลัง / ~${rec.population} คน`);
@@ -408,7 +474,7 @@
         const el = document.getElementById('survey-list');
         if (!el) return;
         let recs = [];
-        try { recs = await SurveyDB.list(); } catch (e) { el.innerHTML = ''; return; }
+        try { recs = await surveyStore.list(); } catch (e) { el.innerHTML = ''; return; }
         if (recs.length === 0) {
             el.innerHTML = '<div style="color:#64748b;font-size:0.78rem">ยังไม่มีข้อมูลที่บันทึก</div>';
             return;
@@ -434,7 +500,7 @@
                 map.flyTo([parseFloat(item.dataset.lat), parseFloat(item.dataset.lon)], parseInt(item.dataset.zoom) || 16);
             });
             item.querySelector('.survey-del').addEventListener('click', async () => {
-                await SurveyDB.remove(id);
+                await surveyStore.remove(id);
                 renderSurveyList();
                 showStatus('ลบทำเลออกจากฐานข้อมูลแล้ว');
             });
@@ -442,7 +508,7 @@
     }
 
     async function exportSurveys() {
-        const recs = await SurveyDB.exportAll();
+        const recs = await surveyStore.exportAll();
         if (recs.length === 0) { showStatus('ยังไม่มีข้อมูลให้ export'); return; }
         const blob = new Blob([JSON.stringify(recs, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -459,7 +525,7 @@
         try {
             const recs = JSON.parse(await file.text());
             if (!Array.isArray(recs)) throw new Error('รูปแบบไฟล์ไม่ถูกต้อง');
-            const n = await SurveyDB.importAll(recs);
+            const n = await surveyStore.importAll(recs);
             renderSurveyList();
             showStatus(`⬆️ นำเข้า ${n} ทำเลแล้ว`);
         } catch (err) {
