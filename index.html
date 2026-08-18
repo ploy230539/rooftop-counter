@@ -148,6 +148,20 @@
                     </div>
 
                     <div class="panel">
+                        <h3>🛰️ นับจาก Google Open Buildings <span style="color:#3b82f6;font-size:0.7rem;font-weight:600;">ครบสุด · ฟรี</span></h3>
+                        <p class="panel-desc">ข้อมูลอาคาร AI ของ Google (ครบกว่า OSM ~19 เท่าในเขตชานเมือง) โหลดจากไฟล์ในแอป เร็วมาก<br>
+                            ▸ วาดพื้นที่ = นับในพื้นที่ &nbsp; ▸ ไม่วาด = นับทั้งหน้าจอ</p>
+                        <button id="btn-ob" class="btn btn-detect" style="background:#2563eb;border-color:#3b82f6;">
+                            🛰️ นับจาก Open Buildings
+                        </button>
+                        <div class="progress-bar" id="ob-progress-bar" style="display:none">
+                            <div class="progress-fill" id="ob-progress-fill" style="background:#3b82f6;"></div>
+                            <span class="progress-text" id="ob-progress-text">0%</span>
+                        </div>
+                        <p class="panel-desc" style="margin-top:6px;font-size:0.72rem;color:#94a3b8;">* ตอนนี้มีข้อมูลเฉพาะโซนบางพลี/บางนา (นำร่อง) — พื้นที่อื่นจะทยอยเพิ่ม</p>
+                    </div>
+
+                    <div class="panel">
                         <h3>🏢 นับอาคารจาก OpenStreetMap <span style="color:#10b981;font-size:0.7rem;font-weight:600;">แม่นยำ · ฟรี</span></h3>
                         <p class="panel-desc">ดึงตำแหน่งอาคารจริงจากฐานข้อมูล OpenStreetMap — แม่นกว่าการเดาจากภาพมาก ไม่ต้องซูม<br>
                             ▸ ถ้าวาดพื้นที่ไว้ = นับเฉพาะในพื้นที่ &nbsp; ▸ ถ้าไม่วาด = นับทั้งหน้าจอที่เห็น</p>

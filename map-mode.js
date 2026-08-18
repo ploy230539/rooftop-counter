@@ -169,6 +169,8 @@
         document.getElementById('btn-count').addEventListener('click', detectFromMap);
         const btnOsm = document.getElementById('btn-osm');
         if (btnOsm) btnOsm.addEventListener('click', countBuildingsOSM);
+        const btnOb = document.getElementById('btn-ob');
+        if (btnOb) btnOb.addEventListener('click', countBuildingsOB);
 
         document.getElementById('btn-manual').addEventListener('click', () => {
             const wasManual = manualMode;
@@ -581,6 +583,133 @@
                 if (marker._icon) marker._icon.style.cursor = '';
             }
         });
+    }
+
+    // ========================
+    //  Google Open Buildings — count from pre-tiled static data
+    //  Tiles live in /buildings/{tx}_{ty}.json (0.01° grid). We only fetch the
+    //  few tiles that overlap the requested area, so a count loads ~300 KB total.
+    // ========================
+    const OB_TILE = 0.01;   // must match the tiler that produced the files
+
+    async function countBuildingsOB() {
+        if (detecting) return;
+        detecting = true;
+
+        const btn = document.getElementById('btn-ob');
+        btn.disabled = true;
+        btn.textContent = '⏳ กำลังโหลดข้อมูลอาคาร...';
+
+        const bar = document.getElementById('ob-progress-bar');
+        const fill = document.getElementById('ob-progress-fill');
+        const pText = document.getElementById('ob-progress-text');
+        bar.style.display = 'block';
+        fill.style.width = '8%';
+        pText.textContent = 'หาช่องข้อมูล...';
+
+        try {
+            // Same region logic as OSM: drawn areas → locked radius → viewport
+            const allAreas = drawnItems.getLayers();
+            let regions;
+            if (allAreas.length > 0) {
+                const newAreas = allAreas.filter(a => !a._detected);
+                if (newAreas.length === 0) { showStatus('ทุกพื้นที่นับแล้ว — วาดพื้นที่ใหม่'); resetOBBtn(); return; }
+                regions = newAreas.map(a => ({ area: a, bounds: a.getBounds() }));
+            } else if (radiusCircle && radiusCircle._locked) {
+                regions = [{ area: radiusCircle, bounds: radiusCircle.getBounds() }];
+            } else {
+                regions = [{ area: null, bounds: map.getBounds() }];
+            }
+
+            let totalNew = 0;
+
+            for (let i = 0; i < regions.length; i++) {
+                const { area, bounds } = regions[i];
+                const label = regions.length > 1 ? `พื้นที่ ${i + 1}/${regions.length}` : 'พื้นที่';
+
+                const km2 = approxAreaKm2(bounds);
+                if (km2 > 60) { showStatus(`⚠️ ${label} กว้างเกินไป (~${Math.round(km2)} ตร.กม.) — ซูมเข้า/วาดให้เล็กลง`); continue; }
+
+                const s = bounds.getSouth(), w = bounds.getWest(), n = bounds.getNorth(), e = bounds.getEast();
+
+                // Which tiles overlap this area?
+                const txMin = Math.floor(w / OB_TILE), txMax = Math.floor(e / OB_TILE);
+                const tyMin = Math.floor(s / OB_TILE), tyMax = Math.floor(n / OB_TILE);
+                const tiles = [];
+                for (let tx = txMin; tx <= txMax; tx++)
+                    for (let ty = tyMin; ty <= tyMax; ty++)
+                        tiles.push([tx, ty]);
+
+                if (tiles.length > 400) { showStatus(`⚠️ ${label} กว้างเกินไป`); continue; }
+
+                pText.textContent = `${label}: โหลด ${tiles.length} ช่อง...`;
+
+                // Fetch only the overlapping tiles (404 = no data there)
+                let loaded = 0;
+                const pts = [];
+                await Promise.all(tiles.map(([tx, ty]) =>
+                    fetch(`buildings/${tx}_${ty}.json`)
+                        .then(r => r.ok ? r.json() : [])
+                        .catch(() => [])
+                        .then(arr => {
+                            for (const p of arr) pts.push(p);
+                            loaded++;
+                            fill.style.width = (10 + (i / regions.length) * 80 + (loaded / tiles.length) * 15) + '%';
+                        })
+                ));
+
+                // Filter to the exact area and drop markers
+                let added = 0;
+                for (const [lat, lon] of pts) {
+                    if (area) {
+                        if (!latLngInArea(L.latLng(lat, lon), area)) continue;
+                    } else {
+                        if (lat < s || lat > n || lon < w || lon > e) continue;
+                    }
+                    L.marker([lat, lon], {
+                        icon: L.divIcon({ className: 'map-marker', iconSize: [10, 10], iconAnchor: [5, 5] })
+                    }).addTo(buildingMarkers)._areaLayer = area;
+                    added++;
+                }
+
+                detectedCount += added;
+                totalNew += added;
+
+                if (area && area !== radiusCircle) {
+                    area._detected = true;
+                    area._detectSource = 'ob';
+                    area._detectedCount = added;
+                    if (area.setStyle) area.setStyle({ color: '#10b981', fillColor: '#10b981' });
+                }
+            }
+
+            fill.style.width = '100%';
+
+            if (totalNew > 0) undoStackMap.push({ type: 'detection', count: totalNew });
+            updateCounter(); updateResults(); updateUndoMap();
+
+            if (totalNew === 0) {
+                showStatus('ไม่พบข้อมูล Open Buildings ในพื้นที่นี้ — ตอนนี้มีเฉพาะโซนบางพลี/บางนา (นำร่อง)');
+            } else {
+                showStatus(`🛰️ Open Buildings: พบ ${totalNew} หลัง (รวมทั้งหมด ${detectedCount})`);
+            }
+        } catch (err) {
+            console.error('OB error:', err);
+            showStatus('⚠️ โหลดข้อมูลไม่ได้: ' + err.message);
+        }
+
+        resetOBBtn();
+    }
+
+    function resetOBBtn() {
+        detecting = false;
+        const btn = document.getElementById('btn-ob');
+        btn.disabled = false;
+        btn.textContent = '🛰️ นับจาก Open Buildings';
+        setTimeout(() => {
+            const b = document.getElementById('ob-progress-bar');
+            if (b) b.style.display = 'none';
+        }, 1500);
     }
 
     // ========================
