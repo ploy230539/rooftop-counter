@@ -328,6 +328,144 @@
                 detectFromMap();
             });
         }
+
+        // --- Survey database (Phase 1: local) ---
+        const sSave = document.getElementById('btn-survey-save');
+        if (sSave) sSave.addEventListener('click', saveSurvey);
+        const sExp = document.getElementById('btn-survey-export');
+        if (sExp) sExp.addEventListener('click', exportSurveys);
+        const sImp = document.getElementById('btn-survey-import');
+        if (sImp) sImp.addEventListener('click', () => document.getElementById('survey-import-file').click());
+        const sImpFile = document.getElementById('survey-import-file');
+        if (sImpFile) sImpFile.addEventListener('change', importSurveys);
+        renderSurveyList();
+    }
+
+    // ========================
+    //  Survey database — capture / list / backup counting sessions
+    // ========================
+    function currentSurveyMethod() {
+        const sources = new Set();
+        drawnItems.eachLayer(a => { if (a._detectSource) sources.add(a._detectSource); });
+        if (sources.size === 1) return [...sources][0];
+        if (sources.size > 1) return 'mixed';
+        if (manualPins.length && !detectedCount) return 'manual';
+        return detectedCount ? 'unknown' : 'manual';
+    }
+
+    function collectSurveyAreas() {
+        const areas = [];
+        drawnItems.eachLayer(a => {
+            if (a instanceof L.Circle) {
+                const c = a.getLatLng();
+                areas.push({ type: 'circle', lat: c.lat, lon: c.lng, radius: a.getRadius() });
+            } else if (a instanceof L.Polygon) {
+                areas.push({ type: 'polygon', latlngs: a.getLatLngs()[0].map(p => [p.lat, p.lng]) });
+            }
+        });
+        return areas;
+    }
+
+    function collectSurveyPoints() {
+        const pts = [];
+        buildingMarkers.eachLayer(m => { const ll = m.getLatLng(); pts.push([+ll.lat.toFixed(6), +ll.lng.toFixed(6), 'auto']); });
+        manualPins.forEach(p => pts.push([+p.latlng.lat.toFixed(6), +p.latlng.lng.toFixed(6), 'manual']));
+        return pts;
+    }
+
+    async function saveSurvey() {
+        const total = detectedCount + manualPins.length;
+        if (total === 0) { showStatus('ยังไม่มีข้อมูลให้บันทึก — กดนับก่อน'); return; }
+        const pph = parseFloat(document.getElementById('avg-people-map').value) || 3.5;
+        const center = map.getCenter();
+        const rec = {
+            label: document.getElementById('survey-label').value.trim() || ('ทำเล ' + new Date().toLocaleDateString('th-TH')),
+            notes: document.getElementById('survey-notes').value.trim(),
+            center: { lat: +center.lat.toFixed(6), lon: +center.lng.toFixed(6) },
+            zoom: map.getZoom(),
+            method: currentSurveyMethod(),
+            buildings_total: total,
+            buildings_auto: detectedCount,
+            buildings_manual: manualPins.length,
+            people_per_household: pph,
+            population: Math.round(total * pph),
+            areas: collectSurveyAreas(),
+            points: collectSurveyPoints()
+        };
+        try {
+            await SurveyDB.save(rec);
+            document.getElementById('survey-label').value = '';
+            document.getElementById('survey-notes').value = '';
+            showStatus(`🗄️ บันทึกแล้ว: ${rec.label} — ${rec.buildings_total} หลัง / ~${rec.population} คน`);
+            renderSurveyList();
+        } catch (e) {
+            console.error('save survey', e);
+            showStatus('บันทึกไม่สำเร็จ: ' + e.message);
+        }
+    }
+
+    async function renderSurveyList() {
+        const el = document.getElementById('survey-list');
+        if (!el) return;
+        let recs = [];
+        try { recs = await SurveyDB.list(); } catch (e) { el.innerHTML = ''; return; }
+        if (recs.length === 0) {
+            el.innerHTML = '<div style="color:#64748b;font-size:0.78rem">ยังไม่มีข้อมูลที่บันทึก</div>';
+            return;
+        }
+        el.innerHTML = `<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:4px">เก็บไว้ ${recs.length} ทำเล</div>` +
+            recs.map(r => {
+                const d = new Date(r.updated_at);
+                const date = d.toLocaleDateString('th-TH') + ' ' + d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                return `<div class="survey-item" data-id="${r.id}" data-lat="${r.center.lat}" data-lon="${r.center.lon}" data-zoom="${r.zoom || 16}"
+                    style="display:flex;align-items:center;gap:6px;padding:6px 4px;border-bottom:1px solid rgba(148,163,184,0.15)">
+                    <div style="flex:1;min-width:0">
+                        <div style="font-weight:600;font-size:0.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.label}</div>
+                        <div style="font-size:0.72rem;color:#94a3b8">${r.buildings_total} หลัง · ~${r.population} คน · ${date}</div>
+                    </div>
+                    <button class="survey-go" title="ไปที่ทำเล" style="background:none;border:none;cursor:pointer;font-size:1rem">📍</button>
+                    <button class="survey-del" title="ลบ" style="background:none;border:none;cursor:pointer;font-size:1rem">🗑️</button>
+                </div>`;
+            }).join('');
+
+        el.querySelectorAll('.survey-item').forEach(item => {
+            const id = item.dataset.id;
+            item.querySelector('.survey-go').addEventListener('click', () => {
+                map.flyTo([parseFloat(item.dataset.lat), parseFloat(item.dataset.lon)], parseInt(item.dataset.zoom) || 16);
+            });
+            item.querySelector('.survey-del').addEventListener('click', async () => {
+                await SurveyDB.remove(id);
+                renderSurveyList();
+                showStatus('ลบทำเลออกจากฐานข้อมูลแล้ว');
+            });
+        });
+    }
+
+    async function exportSurveys() {
+        const recs = await SurveyDB.exportAll();
+        if (recs.length === 0) { showStatus('ยังไม่มีข้อมูลให้ export'); return; }
+        const blob = new Blob([JSON.stringify(recs, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'rooftop-surveys-' + new Date().toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 800);
+        showStatus(`⬇️ Export ${recs.length} ทำเลแล้ว — เก็บไฟล์ไว้ backup`);
+    }
+
+    async function importSurveys(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+            const recs = JSON.parse(await file.text());
+            if (!Array.isArray(recs)) throw new Error('รูปแบบไฟล์ไม่ถูกต้อง');
+            const n = await SurveyDB.importAll(recs);
+            renderSurveyList();
+            showStatus(`⬆️ นำเข้า ${n} ทำเลแล้ว`);
+        } catch (err) {
+            showStatus('นำเข้าไม่สำเร็จ: ' + err.message);
+        }
+        e.target.value = '';
     }
 
     // ========================
@@ -1436,6 +1574,8 @@
         } else {
             el.style.display = 'none';
         }
+        const sSave = document.getElementById('btn-survey-save');
+        if (sSave) sSave.disabled = total === 0;
         updateUndoMap();
     }
 
