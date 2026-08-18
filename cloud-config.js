@@ -5,6 +5,6 @@
 //
 // Leave both empty to keep using local (in-browser) storage.
 window.CLOUD_CONFIG = {
-    url: '',       // e.g. 'https://abcdefgh.supabase.co'
-    anonKey: ''    // the "anon public" key (a long eyJ... string)
+    url: 'https://nzzwktxiopkmzuzbafed.supabase.co',       // e.g. 'https://abcdefgh.supabase.co'
+    anonKey: 'sb_publishable_sr6KTzIjFkGSqAUa3OqZdw_kLJMyxt-'    // the "anon public" key (a long eyJ... string)
 };
