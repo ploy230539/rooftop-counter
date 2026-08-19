@@ -16,6 +16,8 @@
     let freehandPoints = [];
     let freehandPolyline = null;
     let drawControl = null;
+    let layerControl = null;   // base/overlay layer switcher (Google layers added at runtime)
+    let googleReady = false;   // Google Maps JS API loaded
 
     // Undo stack: 'area' | 'pin' | { type:'detection', count:N }
     let undoStackMap = [];
@@ -68,12 +70,15 @@
         });
 
         // Layer switcher control
-        L.control.layers({
+        layerControl = L.control.layers({
             '🗺️ แผนที่ถนน': roadMap,
             '🛰️ ดาวเทียม': satellite
         }, {
             '🏷️ ชื่อถนน/ซอย': labels
         }, { position: 'topleft', collapsed: false }).addTo(map);
+
+        // Add Google Maps layers (satellite / road / hybrid) if an API key is configured
+        initGoogleMaps();
 
         drawnItems = new L.FeatureGroup().addTo(map);
         buildingMarkers = new L.FeatureGroup().addTo(map);
@@ -174,6 +179,8 @@
         if (btnOsm) btnOsm.addEventListener('click', countBuildingsOSM);
         const btnOb = document.getElementById('btn-ob');
         if (btnOb) btnOb.addEventListener('click', countBuildingsOB);
+        const btnSv = document.getElementById('btn-streetview');
+        if (btnSv) btnSv.addEventListener('click', openStreetView);
 
         document.getElementById('btn-manual').addEventListener('click', () => {
             const wasManual = manualMode;
@@ -344,6 +351,41 @@
         surveyStore = window.SurveyDB;   // default: local
         renderSurveyList();
         renderCloudAuth();               // switch to cloud + re-render if a session exists
+    }
+
+    // ========================
+    //  Google Maps layers + Street View
+    // ========================
+    function initGoogleMaps() {
+        const key = ((window.GMAPS_CONFIG && window.GMAPS_CONFIG.key) || '').trim();
+        if (!key) return;                                        // no key → keep OSM/Esri only
+        if (!L.gridLayer || !L.gridLayer.googleMutant) return;   // plugin not loaded
+        const cbName = 'gmapsInit_' + Math.random().toString(36).slice(2);
+        window[cbName] = function () {
+            try {
+                const gRoad = L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 21 });
+                const gSat = L.gridLayer.googleMutant({ type: 'satellite', maxZoom: 21 });
+                const gHybrid = L.gridLayer.googleMutant({ type: 'hybrid', maxZoom: 21 });
+                layerControl.addBaseLayer(gRoad, '🗺️ Google ถนน');
+                layerControl.addBaseLayer(gSat, '🛰️ Google ดาวเทียม');
+                layerControl.addBaseLayer(gHybrid, '🛰️ Google (มีป้ายชื่อ)');
+                googleReady = true;
+                showStatus('☑️ เชื่อม Google Maps แล้ว — เลือก layer Google ได้มุมซ้ายบน');
+            } catch (e) { console.error('Google layers error', e); }
+        };
+        const s = document.createElement('script');
+        s.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(key) +
+            '&callback=' + cbName + '&libraries=geocoding&loading=async';
+        s.async = true;
+        s.onerror = () => showStatus('⚠️ โหลด Google Maps ไม่ได้ — เช็ค key / การจำกัด referrer / billing');
+        document.head.appendChild(s);
+    }
+
+    function openStreetView() {
+        const ll = searchPin ? searchPin.getLatLng() : map.getCenter();
+        window.open('https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=' +
+            ll.lat + ',' + ll.lng, '_blank');
+        showStatus('👁️ เปิด Street View จุด ' + ll.lat.toFixed(5) + ', ' + ll.lng.toFixed(5));
     }
 
     // ========================
@@ -1457,7 +1499,37 @@
                 return;
             }
 
-            searchNominatim(query);
+            // Prefer Google geocoder when available (better Thai place matching), else Nominatim
+            if (googleReady && window.google && window.google.maps) googleGeocode(query);
+            else searchNominatim(query);
+        }
+
+        function googleGeocode(query) {
+            resultsEl.innerHTML = '<div class="search-loading">🔍 กำลังค้นหา (Google)...</div>';
+            resultsEl.classList.add('show');
+            try {
+                new google.maps.Geocoder().geocode({ address: query, region: 'th' }, (results, status) => {
+                    if (status === 'OK' && results && results.length) {
+                        resultsEl.innerHTML = '';
+                        results.slice(0, 6).forEach(place => {
+                            const loc = place.geometry.location;
+                            const item = document.createElement('div');
+                            item.className = 'search-item';
+                            item.innerHTML = `<div class="search-name">📍 ${place.formatted_address}</div>`;
+                            item.addEventListener('click', () => {
+                                goToLocation(loc.lat(), loc.lng(), 16, place.formatted_address);
+                                input.value = place.formatted_address;
+                                resultsEl.classList.remove('show');
+                            });
+                            resultsEl.appendChild(item);
+                        });
+                    } else {
+                        searchNominatim(query);   // fall back
+                    }
+                });
+            } catch (e) {
+                searchNominatim(query);
+            }
         }
 
         function parseGoogleMapsUrl(text) {
