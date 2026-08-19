@@ -110,6 +110,26 @@
             });
         }
 
+        // Paste a screenshot directly with Ctrl+V (no need to save the file first)
+        document.addEventListener('paste', e => {
+            const items = (e.clipboardData || window.clipboardData) && (e.clipboardData || window.clipboardData).items;
+            if (!items) return;
+            for (const item of items) {
+                if (item.type && item.type.indexOf('image') === 0) {
+                    const blob = item.getAsFile();
+                    if (blob) {
+                        e.preventDefault();
+                        // Make sure the image tab is showing, then load
+                        const tabImg = document.getElementById('tab-image');
+                        if (tabImg && !tabImg.classList.contains('active')) tabImg.click();
+                        loadFile(blob);
+                        setHint('📋 วางรูปจากคลิปบอร์ดแล้ว — วงพื้นที่ → กดตรวจจับ');
+                    }
+                    return;
+                }
+            }
+        });
+
         window.addEventListener('resize', resizeCanvas);
     }
 
