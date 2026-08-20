@@ -6,5 +6,5 @@
 // Leave empty to keep using the free OSM / Esri layers only.
 // Street View works even without a key.
 window.GMAPS_CONFIG = {
-    key: ''    // e.g. 'AIzaSy...'
+    key: 'AIzaSyAQvfPYizr1VqZ56GZ-Mw0jFYYAEWVmpto'    // e.g. 'AIzaSy...'
 };
