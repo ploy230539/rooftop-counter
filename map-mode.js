@@ -29,7 +29,11 @@
         if (mapInitialized) return;
         mapInitialized = true;
 
-        map = L.map('map').setView([13.7563, 100.5018], 15);
+        map = L.map('map', {
+            rotate: true,               // enable map rotation (leaflet-rotate plugin)
+            touchRotate: true,          // two-finger twist on touch devices
+            rotateControl: { closeOnZeroBearing: false }  // compass control to rotate/reset
+        }).setView([13.7563, 100.5018], 15);
 
         // Road map (default) — OpenStreetMap
         const roadMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
