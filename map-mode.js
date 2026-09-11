@@ -32,7 +32,7 @@
         map = L.map('map', {
             rotate: true,               // enable map rotation (leaflet-rotate plugin)
             touchRotate: true,          // two-finger twist on touch devices
-            rotateControl: { closeOnZeroBearing: false }  // compass control to rotate/reset
+            rotateControl: false        // use our own clearer ↺ ↻ 🧭 buttons instead
         }).setView([13.7563, 100.5018], 15);
 
         // Road map (default) — OpenStreetMap
@@ -98,6 +98,29 @@
             edit: { featureGroup: drawnItems, remove: true }
         });
         map.addControl(drawControl);
+
+        // Rotate buttons (↺ ↻ 🧭) — clearer than shift-drag / two-finger gesture
+        const RotateControl = L.Control.extend({
+            options: { position: 'bottomright' },
+            onAdd: function () {
+                const div = L.DomUtil.create('div', 'leaflet-bar');
+                const mk = (html, title, fn) => {
+                    const a = L.DomUtil.create('a', '', div);
+                    a.href = '#'; a.title = title; a.innerHTML = html;
+                    a.setAttribute('role', 'button');
+                    a.style.fontSize = '17px';
+                    a.style.fontWeight = 'bold';
+                    L.DomEvent.on(a, 'click', L.DomEvent.stop);
+                    L.DomEvent.on(a, 'click', fn);
+                };
+                mk('↺', 'หมุนซ้าย 15°', () => map.setBearing((map.getBearing() || 0) - 15));
+                mk('↻', 'หมุนขวา 15°', () => map.setBearing((map.getBearing() || 0) + 15));
+                mk('🧭', 'กลับทิศเหนือ', () => map.setBearing(0));
+                L.DomEvent.disableClickPropagation(div);
+                return div;
+            }
+        });
+        map.addControl(new RotateControl());
 
         // When a Leaflet Draw tool is clicked, deactivate freehand/manual/eraser
         // Use DOM click on toolbar (more reliable than draw:drawstart when other modes are active)
