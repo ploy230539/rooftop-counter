@@ -18,6 +18,7 @@
     let drawControl = null;
     let layerControl = null;   // base/overlay layer switcher (Google layers added at runtime)
     let googleReady = false;   // Google Maps JS API loaded
+    let googleLayerActive = false;  // a Google (GoogleMutant) base layer is selected — rotation unsupported
 
     // Undo stack: 'area' | 'pin' | { type:'detection', count:N }
     let undoStackMap = [];
@@ -71,6 +72,17 @@
             } else {
                 if (cb && cb.checked) cb.click();
             }
+
+            // Google (GoogleMutant) layers can't rotate — lock to north + disable rotation
+            googleLayerActive = /Google/.test(e.name);
+            if (googleLayerActive) {
+                if (map.getBearing && map.getBearing() !== 0) map.setBearing(0);
+                if (map.touchRotate) map.touchRotate.disable();
+                if (map.shiftKeyRotate) map.shiftKeyRotate.disable();
+            } else {
+                if (map.touchRotate) map.touchRotate.enable();
+                if (map.shiftKeyRotate) map.shiftKeyRotate.enable();
+            }
         });
 
         // Layer switcher control
@@ -113,8 +125,15 @@
                     L.DomEvent.on(a, 'click', L.DomEvent.stop);
                     L.DomEvent.on(a, 'click', fn);
                 };
-                mk('↺', 'หมุนซ้าย 15°', () => map.setBearing((map.getBearing() || 0) - 15));
-                mk('↻', 'หมุนขวา 15°', () => map.setBearing((map.getBearing() || 0) + 15));
+                const rotateBy = (d) => {
+                    if (googleLayerActive) {
+                        showStatus('layer Google หมุนไม่ได้ — สลับไป "🛰️ ดาวเทียม" (Esri) เพื่อหมุนแผนที่');
+                        return;
+                    }
+                    map.setBearing((map.getBearing() || 0) + d);
+                };
+                mk('↺', 'หมุนซ้าย 15°', () => rotateBy(-15));
+                mk('↻', 'หมุนขวา 15°', () => rotateBy(15));
                 mk('🧭', 'กลับทิศเหนือ', () => map.setBearing(0));
                 L.DomEvent.disableClickPropagation(div);
                 return div;
